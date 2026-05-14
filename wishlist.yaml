@@ -1,0 +1,26 @@
+wishlist:
+  - name: "Coca-Cola"
+    allowed_brands: ["COCA-COLA"]
+    keywords: ["cola", "coca"]
+    excluded_packaging: ["Dose", "Glas"]
+    unit_filter: "L"
+    min_quantity: 1.0
+    max_price: 2.00
+    active: true
+
+  - name: "Butter"
+    allowed_brands: ["LANDFREUDE", "WEIHENSTEPHAN"]
+    keywords: ["butter", "süßrahmbutter", "markenbutter"]
+    exclude_keywords: ["buttermilch", "buttergebäck"]
+    unit_filter: "kg"
+    max_price: 2.50
+    active: true
+
+  - name: "Milch"
+    allowed_brands: ["MILSANI", "WEIHENSTEPHAN", "ARLA", "MÜLLER"]
+    keywords: ["milch", "vollmilch", "frische milch", "h-milch"]
+    exclude_keywords: ["buttermilch", "kokosmilch", "mandelmilch"]
+    unit_filter: "L"
+    min_quantity: 1.0
+    max_price: 1.50
+    active: true

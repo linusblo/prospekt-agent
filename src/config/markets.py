@@ -1,0 +1,15 @@
+from __future__ import annotations
+
+MARKET_DISPLAY_NAMES: dict[str, str] = {
+    "aldi_nord": "Aldi Nord",
+    "lidl":      "Lidl",
+    "rewe":      "Rewe",
+    "edeka":     "Edeka",
+    "kaufland":  "Kaufland",
+    "penny":     "Penny",
+    "netto":     "Netto",
+}
+
+
+def get_display_name(slug: str) -> str:
+    return MARKET_DISPLAY_NAMES.get(slug, slug)
