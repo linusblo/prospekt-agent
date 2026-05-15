@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS offers (
     original_price      REAL,
     discount_percent    REAL,
     base_price_value    REAL,
+    base_price_value_max REAL,
     base_price_unit     TEXT,
+    base_price_has_prefix INTEGER NOT NULL DEFAULT 0,
     sales_unit_raw      TEXT,
     sales_unit_json     TEXT,
     is_deposit_product  INTEGER NOT NULL DEFAULT 0,
@@ -37,6 +39,11 @@ CREATE TABLE IF NOT EXISTS offers (
     image_url           TEXT,
     category_ids        TEXT,
     scraped_at          TEXT    NOT NULL,
+    card_price          REAL,
+    card_base_price_value     REAL,
+    card_base_price_value_max REAL,
+    card_base_price_unit      TEXT,
+    card_discount_percent     REAL,
     UNIQUE(source, product_slug)
 )
 """
@@ -46,33 +53,45 @@ INSERT INTO offers (
     source, product_slug, name, brand,
     short_description, long_description,
     sale_price, original_price, discount_percent,
-    base_price_value, base_price_unit,
+    base_price_value, base_price_value_max, base_price_unit, base_price_has_prefix,
     sales_unit_raw, sales_unit_json,
     is_deposit_product, deposit_value,
     valid_from, valid_until,
-    image_url, category_ids, scraped_at
+    image_url, category_ids, scraped_at,
+    card_price, card_base_price_value, card_base_price_value_max,
+    card_base_price_unit, card_discount_percent
 ) VALUES (
-    ?,?,?,?,  ?,?,  ?,?,?,  ?,?,  ?,?,  ?,?,  ?,?,  ?,?,?
+    ?,?,?,?,  ?,?,  ?,?,?,
+    ?,?,?,?,  ?,?,  ?,?,  ?,?,
+    ?,?,?,
+    ?,?,?,?,?
 )
 ON CONFLICT(source, product_slug) DO UPDATE SET
-    name                = excluded.name,
-    brand               = excluded.brand,
-    short_description   = excluded.short_description,
-    long_description    = excluded.long_description,
-    sale_price          = excluded.sale_price,
-    original_price      = excluded.original_price,
-    discount_percent    = excluded.discount_percent,
-    base_price_value    = excluded.base_price_value,
-    base_price_unit     = excluded.base_price_unit,
-    sales_unit_raw      = excluded.sales_unit_raw,
-    sales_unit_json     = excluded.sales_unit_json,
-    is_deposit_product  = excluded.is_deposit_product,
-    deposit_value       = excluded.deposit_value,
-    valid_from          = excluded.valid_from,
-    valid_until         = excluded.valid_until,
-    image_url           = excluded.image_url,
-    category_ids        = excluded.category_ids,
-    scraped_at          = excluded.scraped_at
+    name                      = excluded.name,
+    brand                     = excluded.brand,
+    short_description         = excluded.short_description,
+    long_description          = excluded.long_description,
+    sale_price                = excluded.sale_price,
+    original_price            = excluded.original_price,
+    discount_percent          = excluded.discount_percent,
+    base_price_value          = excluded.base_price_value,
+    base_price_value_max      = excluded.base_price_value_max,
+    base_price_unit           = excluded.base_price_unit,
+    base_price_has_prefix     = excluded.base_price_has_prefix,
+    sales_unit_raw            = excluded.sales_unit_raw,
+    sales_unit_json           = excluded.sales_unit_json,
+    is_deposit_product        = excluded.is_deposit_product,
+    deposit_value             = excluded.deposit_value,
+    valid_from                = excluded.valid_from,
+    valid_until               = excluded.valid_until,
+    image_url                 = excluded.image_url,
+    category_ids              = excluded.category_ids,
+    scraped_at                = excluded.scraped_at,
+    card_price                = excluded.card_price,
+    card_base_price_value     = excluded.card_base_price_value,
+    card_base_price_value_max = excluded.card_base_price_value_max,
+    card_base_price_unit      = excluded.card_base_price_unit,
+    card_discount_percent     = excluded.card_discount_percent
 """
 
 # ---------------------------------------------------------------------------
@@ -178,6 +197,14 @@ class OfferRepository:
         with self._connection() as conn:
             conn.execute(_CREATE_OFFERS_TABLE)
             conn.execute(_CREATE_WISHLIST_TABLE)
+            # Idempotente Schema-Migrationen für bestehende DBs
+            _add_column_if_missing(conn, "offers", "card_price",                "REAL")
+            _add_column_if_missing(conn, "offers", "base_price_value_max",      "REAL")
+            _add_column_if_missing(conn, "offers", "base_price_has_prefix",     "INTEGER NOT NULL DEFAULT 0")
+            _add_column_if_missing(conn, "offers", "card_base_price_value",     "REAL")
+            _add_column_if_missing(conn, "offers", "card_base_price_value_max", "REAL")
+            _add_column_if_missing(conn, "offers", "card_base_price_unit",      "TEXT")
+            _add_column_if_missing(conn, "offers", "card_discount_percent",     "REAL")
 
     # ------------------------------------------------------------------
     # Offers
@@ -359,7 +386,9 @@ def _offer_to_row(offer: Offer) -> tuple:
         offer.original_price,
         offer.discount_percent,
         offer.base_price_value,
+        offer.base_price_value_max,
         offer.base_price_unit,
+        int(offer.base_price_has_prefix),
         offer.sales_unit_raw,
         offer.sales_unit.model_dump_json() if offer.sales_unit else None,
         int(offer.is_deposit_product),
@@ -369,7 +398,21 @@ def _offer_to_row(offer: Offer) -> tuple:
         offer.image_url,
         json.dumps(offer.category_ids),
         offer.scraped_at.isoformat(),
+        offer.card_price,
+        offer.card_base_price_value,
+        offer.card_base_price_value_max,
+        offer.card_base_price_unit,
+        offer.card_discount_percent,
     )
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, col: str, definition: str
+) -> None:
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
+    except sqlite3.OperationalError:
+        pass  # Spalte existiert bereits
 
 
 def _wishlist_to_row(item: WishlistItem, now: str) -> tuple:

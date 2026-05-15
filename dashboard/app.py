@@ -69,19 +69,22 @@ def _match_results() -> pd.DataFrame:
     for item_name, results in results_by_item.items():
         for r in results:
             o = r.offer
+            card_p = o.get("card_price")
             rows.append({
-                "Wunschliste": item_name,
-                "Markt":       get_display_name(o.get("source") or ""),
-                "Bild":        o.get("image_url") or "",
-                "Produkt":     o.get("name") or "",
-                "Marke":       o.get("brand") or "",
-                "Preis":       o.get("sale_price"),
-                "UVP":         o.get("original_price"),
-                "Rabatt":      o.get("discount_percent"),
-                "Inhalt":      o.get("sales_unit_raw") or "",
-                "Basispreis":  _fmt_base_price(o),
-                "Gültig bis":  (o.get("valid_until") or "")[:10],
-                "Doppelt":     r.duplicate_count if r.duplicate_count > 1 else None,
+                "Wunschliste":  item_name,
+                "Markt":        get_display_name(o.get("source") or ""),
+                "Bild":         o.get("image_url") or "",
+                "Produkt":      o.get("name") or "",
+                "Marke":        o.get("brand") or "",
+                "Preis":        o.get("sale_price"),
+                "UVP":          o.get("original_price"),
+                "Rabatt":       o.get("discount_percent"),
+                "Inhalt":       o.get("sales_unit_raw") or "",
+                "Basispreis":   _fmt_base_price(o),
+                "Card-Preis":   card_p,
+                "Card-Basis":   _fmt_base_price(o, card=True) if card_p else "",
+                "Gültig bis":   (o.get("valid_until") or "")[:10],
+                "Doppelt":      r.duplicate_count if r.duplicate_count > 1 else None,
             })
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
@@ -90,9 +93,28 @@ def _match_results() -> pd.DataFrame:
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
-def _fmt_base_price(o: dict) -> str:
-    v, u = o.get("base_price_value"), o.get("base_price_unit")
-    return f"{v:.2f} €/{u}" if v and u else ""
+def _fmt_base_price(o: dict, card: bool = False) -> str:
+    """
+    Formatiert Basispreis als lesbaren String:
+      Single:   "5.70 €/kg"
+      Range:    "5.70 - 11.10 €/kg"
+      Ab-Preis: "ab 5.70 €/kg"
+      Card:     wie oben, mit " *" Suffix
+    """
+    prefix = "card_" if card else ""
+    v     = o.get(f"{prefix}base_price_value")
+    v_max = o.get(f"{prefix}base_price_value_max")
+    u     = o.get(f"{prefix}base_price_unit")
+
+    if not v or not u:
+        return ""
+
+    has_ab = bool(o.get("base_price_has_prefix")) and not card
+    price_part = f"{v:.2f}" if v_max is None else f"{v:.2f} - {v_max:.2f}"
+    prefix_str = "ab " if has_ab else ""
+    suffix_str = " *" if card else ""
+
+    return f"{prefix_str}{price_part} €/{u}{suffix_str}"
 
 
 def _offers_to_df(offers: list[dict]) -> pd.DataFrame:
@@ -335,16 +357,26 @@ with tab_hits:
     # ── Teil 3: Aktualisieren-Button ──
     with col_btn:
         if st.button("🔄 Aktualisieren", use_container_width=True):
-            with st.spinner("Lade Angebote von Aldi Nord…"):
-                try:
-                    from src.adapters.aldi_nord import AldiNordAdapter
-                    adapter = AldiNordAdapter()
-                    offers  = adapter.fetch_offers()
-                    count   = OfferRepository(DB_PATH).upsert_many(offers)
-                    st.cache_data.clear()
-                    st.success(f"✅ {count} Angebote aktualisiert.")
-                except Exception as exc:
-                    st.error(f"Fehler beim Aktualisieren: {exc}")
+            from src.adapters.aldi_nord import AldiNordAdapter
+            from src.adapters.kaufland import KauflandAdapter
+            adapters = [AldiNordAdapter(), KauflandAdapter()]
+            repo_ref = OfferRepository(DB_PATH)
+            total = 0
+            errors: list[str] = []
+            for adp in adapters:
+                with st.spinner(f"Lade {get_display_name(adp.source_name)}…"):
+                    try:
+                        offers = adp.fetch_offers()
+                        if offers:
+                            total += repo_ref.upsert_many(offers)
+                    except Exception as exc:
+                        errors.append(f"{get_display_name(adp.source_name)}: {exc}")
+            st.cache_data.clear()
+            if errors:
+                for e in errors:
+                    st.error(f"Fehler: {e}")
+            if total:
+                st.success(f"✅ {total} Angebote aktualisiert.")
 
     df_hits = _match_results()
     if df_hits.empty:
@@ -360,8 +392,12 @@ with tab_hits:
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Bild":    st.column_config.ImageColumn("Bild", width="small"),
-                "Doppelt": st.column_config.NumberColumn(
+                "Bild":       st.column_config.ImageColumn("Bild", width="small"),
+                "Card-Preis": st.column_config.NumberColumn(
+                    "Card-Preis €", format="%.2f €",
+                    help="Kaufland-Card-Preis (nur Kaufland)"
+                ),
+                "Doppelt":    st.column_config.NumberColumn(
                     "Doppelt", help="Gleicher Artikel mehrfach im Sortiment"
                 ),
                 **_PRICE_COLS,

@@ -40,9 +40,11 @@ class Offer(BaseModel):
     original_price: float | None = None     # strikePrice
     discount_percent: float | None = None   # berechnet aus orig/sale
 
-    # Basispreis (kommt direkt von Aldi, kein eigenes Ausrechnen nötig)
-    base_price_value: float | None = None   # 0.79
-    base_price_unit: str | None = None      # "Liter", "kg"
+    # Basispreis
+    base_price_value: float | None = None       # 0.79 (unterer Wert / Einzelwert)
+    base_price_value_max: float | None = None   # 11.10 wenn Range, sonst None
+    base_price_unit: str | None = None          # "kg", "L", "g", …
+    base_price_has_prefix: bool = False         # True wenn "ab" im Originalstring
 
     # Verpackung
     sales_unit_raw: str | None = None
@@ -55,6 +57,13 @@ class Offer(BaseModel):
     # Gültigkeitszeitraum (Unix-Timestamps werden beim Mapping konvertiert)
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+
+    # Loyalty-/Card-Preis (z.B. Kaufland-Card)
+    card_price: float | None = None
+    card_base_price_value: float | None = None
+    card_base_price_value_max: float | None = None
+    card_base_price_unit: str | None = None
+    card_discount_percent: float | None = None
 
     # Metadaten
     image_url: str | None = None
