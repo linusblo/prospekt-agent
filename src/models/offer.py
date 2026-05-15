@@ -8,12 +8,13 @@ from pydantic import BaseModel, model_validator
 
 class Supermarket(str, Enum):
     ALDI_NORD = "aldi_nord"
-    LIDL = "lidl"
-    REWE = "rewe"
-    EDEKA = "edeka"
-    KAUFLAND = "kaufland"
-    PENNY = "penny"
-    NETTO = "netto"
+    KAUFLAND  = "kaufland"
+    TRINKGUT  = "trinkgut"
+    LIDL      = "lidl"
+    REWE      = "rewe"
+    EDEKA     = "edeka"
+    PENNY     = "penny"
+    NETTO     = "netto"
 
 
 class ParsedSalesUnit(BaseModel):

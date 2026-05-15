@@ -22,6 +22,7 @@ log = logging.getLogger("run_agent")
 
 from src.adapters.aldi_nord import AldiNordAdapter
 from src.adapters.kaufland import KauflandAdapter
+from src.adapters.trinkgut import TrinkgutAdapter
 from src.adapters.base import SupermarketAdapter
 from src.db.repository import OfferRepository
 from src.matching.matcher import Matcher
@@ -30,6 +31,7 @@ from src.matching.wishlist import Wishlist
 ADAPTERS: list[SupermarketAdapter] = [
     AldiNordAdapter(),
     KauflandAdapter(),
+    TrinkgutAdapter(),
 ]
 
 
@@ -73,15 +75,15 @@ def main() -> None:
     results_by_item = matcher.match_all(active_offers)
 
     any_match = False
-    for item_name, match_results in results_by_item.items():
-        if not match_results:
+    for item_name, products in results_by_item.items():
+        if not products:
             continue
         any_match = True
         print(f"\n{'='*62}")
-        print(f"  {item_name}  —  {len(match_results)} Treffer")
+        print(f"  {item_name}  —  {len(products)} Treffer")
         print(f"{'='*62}")
-        for r in match_results:
-            _print_offer(r.offer, r.duplicate_count)
+        for mp in products:
+            _print_offer(mp.primary_offer, mp.primary_market_count, mp.alternative_offers)
 
     if not any_match:
         print("\nKeine Wunschlisten-Treffer in den aktuellen Angeboten.")
@@ -89,7 +91,7 @@ def main() -> None:
     log.info("Fertig.")
 
 
-def _print_offer(o: dict, duplicate_count: int = 1) -> None:
+def _print_offer(o: dict, duplicate_count: int = 1, alternatives: list[dict] | None = None) -> None:
     name       = o.get("name") or "?"
     brand      = o.get("brand") or ""
     source     = o.get("source") or ""
@@ -124,6 +126,12 @@ def _print_offer(o: dict, duplicate_count: int = 1) -> None:
     print(f"    Gültig bis: {valid_until}")
     if brand:
         print(f"    Marke:      {brand}")
+    if alternatives:
+        from src.config.markets import get_display_name
+        for alt in alternatives:
+            alt_price = alt.get("sale_price") or 0.0
+            alt_market = get_display_name(alt.get("source") or "")
+            print(f"    Auch bei:   {alt_market} — {alt_price:.2f} €")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 MARKET_DISPLAY_NAMES: dict[str, str] = {
     "aldi_nord": "Aldi Nord",
     "kaufland":  "Kaufland",
+    "trinkgut":  "Trinkgut",
     "lidl":      "Lidl",
     "rewe":      "Rewe",
     "edeka":     "Edeka",

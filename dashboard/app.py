@@ -59,34 +59,27 @@ def _distinct_categories() -> list[str]:
 
 
 @st.cache_data(ttl=60)
-def _match_results() -> pd.DataFrame:
+def _load_matched_products() -> dict[str, list[dict]]:
+    """
+    Gibt gematche Produkte als serialisierbare Dict-Struktur zurück.
+    Format: item_name → [{primary, primary_count, alternatives}, ...]
+    """
     wishlist = Wishlist.from_db(DB_PATH)
     if not wishlist.active_items:
-        return pd.DataFrame()
+        return {}
     offers = OfferRepository(DB_PATH).get_active_offers()
     results_by_item = Matcher(wishlist, food_only=True).match_all(offers)
-    rows = []
-    for item_name, results in results_by_item.items():
-        for r in results:
-            o = r.offer
-            card_p = o.get("card_price")
-            rows.append({
-                "Wunschliste":  item_name,
-                "Markt":        get_display_name(o.get("source") or ""),
-                "Bild":         o.get("image_url") or "",
-                "Produkt":      o.get("name") or "",
-                "Marke":        o.get("brand") or "",
-                "Preis":        o.get("sale_price"),
-                "UVP":          o.get("original_price"),
-                "Rabatt":       o.get("discount_percent"),
-                "Inhalt":       o.get("sales_unit_raw") or "",
-                "Basispreis":   _fmt_base_price(o),
-                "Card-Preis":   card_p,
-                "Card-Basis":   _fmt_base_price(o, card=True) if card_p else "",
-                "Gültig bis":   (o.get("valid_until") or "")[:10],
-                "Doppelt":      r.duplicate_count if r.duplicate_count > 1 else None,
-            })
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+    out: dict[str, list[dict]] = {}
+    for item_name, products in results_by_item.items():
+        out[item_name] = [
+            {
+                "primary":       mp.primary_offer,
+                "primary_count": mp.primary_market_count,
+                "alternatives":  mp.alternative_offers,
+            }
+            for mp in products
+        ]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +352,8 @@ with tab_hits:
         if st.button("🔄 Aktualisieren", use_container_width=True):
             from src.adapters.aldi_nord import AldiNordAdapter
             from src.adapters.kaufland import KauflandAdapter
-            adapters = [AldiNordAdapter(), KauflandAdapter()]
+            from src.adapters.trinkgut import TrinkgutAdapter
+            adapters = [AldiNordAdapter(), KauflandAdapter(), TrinkgutAdapter()]
             repo_ref = OfferRepository(DB_PATH)
             total = 0
             errors: list[str] = []
@@ -378,31 +372,97 @@ with tab_hits:
             if total:
                 st.success(f"✅ {total} Angebote aktualisiert.")
 
-    df_hits = _match_results()
-    if df_hits.empty:
+    matched = _load_matched_products()
+    total_products = sum(len(v) for v in matched.values())
+
+    if total_products == 0:
         st.info(
             "Keine Treffer.  \n"
             "Mögliche Ursachen: Wishlist leer (→ `migrate_wishlist.py` ausführen), "
             "keine aktiven Angebote, oder alle Filter zu streng."
         )
     else:
-        st.caption(f"{len(df_hits)} Treffer")
-        st.dataframe(
-            df_hits,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Bild":       st.column_config.ImageColumn("Bild", width="small"),
-                "Card-Preis": st.column_config.NumberColumn(
-                    "Card-Preis €", format="%.2f €",
-                    help="Kaufland-Card-Preis (nur Kaufland)"
-                ),
-                "Doppelt":    st.column_config.NumberColumn(
-                    "Doppelt", help="Gleicher Artikel mehrfach im Sortiment"
-                ),
-                **_PRICE_COLS,
-            },
-        )
+        st.caption(f"{total_products} Produkte")
+
+        for item_name, products in matched.items():
+            if not products:
+                continue
+
+            st.markdown(f"**{item_name}** — {len(products)} Treffer")
+
+            # Spalten-Header
+            h = st.columns([1, 3, 2, 1.2, 1.5, 1.5, 2])
+            for col, lbl in zip(h, ["Bild", "Produkt", "Preis", "Rabatt", "Inhalt/Basis", "Gültig bis", "Märkte"]):
+                col.markdown(f"<small><b>{lbl}</b></small>", unsafe_allow_html=True)
+
+            for prod in products:
+                o       = prod["primary"]
+                alts    = prod["alternatives"]
+                p_count = prod["primary_count"]
+
+                # Märkte-Badge
+                market_label = get_display_name(o.get("source") or "")
+                if alts:
+                    market_label += f" **+{len(alts)}**"
+                if p_count > 1:
+                    market_label += f" *(×{p_count})*"
+
+                # Preis-String
+                price = o.get("sale_price") or 0.0
+                orig  = o.get("original_price")
+                disc  = o.get("discount_percent")
+                price_md = f"**{price:.2f} €**"
+                if orig:
+                    price_md += f"  \n~~{orig:.2f} €~~"
+                card_p = o.get("card_price")
+                if card_p:
+                    price_md += f"  \n🃏 {card_p:.2f} €*"
+
+                # Inhalt + Basispreis
+                unit_raw = o.get("sales_unit_raw") or ""
+                bp_str   = _fmt_base_price(o)
+                content  = unit_raw
+                if bp_str:
+                    content += f"  \n{bp_str}"
+
+                cols = st.columns([1, 3, 2, 1.2, 1.5, 1.5, 2])
+                img_url = o.get("image_url")
+                if img_url:
+                    cols[0].image(img_url, width=55)
+                else:
+                    cols[0].write("")
+                prod_md = f"**{o.get('name', '')}**"
+                if o.get("brand"):
+                    prod_md += f"  \n<small>{o['brand']}</small>"
+                cols[1].markdown(prod_md, unsafe_allow_html=True)
+                cols[2].markdown(price_md)
+                cols[3].write(f"-{disc:.0f}%" if disc else "–")
+                cols[4].markdown(content or "–")
+                cols[5].write((o.get("valid_until") or "")[:10] or "–")
+                cols[6].markdown(market_label)
+
+                if alts:
+                    with st.expander(f"Auch verfügbar bei {len(alts)} weiteren Märkten"):
+                        alt_rows = []
+                        for alt in alts:
+                            alt_bp = _fmt_base_price(alt)
+                            alt_card = alt.get("card_price")
+                            preis_str = f"{alt.get('sale_price', 0):.2f} €"
+                            if alt_card:
+                                preis_str += f" (🃏 {alt_card:.2f} €*)"
+                            alt_rows.append({
+                                "Markt":      get_display_name(alt.get("source") or ""),
+                                "Preis":      preis_str,
+                                "Basispreis": alt_bp or "–",
+                                "Gültig bis": (alt.get("valid_until") or "")[:10],
+                            })
+                        st.dataframe(
+                            pd.DataFrame(alt_rows),
+                            hide_index=True,
+                            use_container_width=True,
+                        )
+
+            st.divider()
 
 # ── Tab 2: Wishlist ─────────────────────────────────────────────────────────
 with tab_wish:

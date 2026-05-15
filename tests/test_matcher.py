@@ -1,15 +1,15 @@
-"""Tests für den Matcher: Wortgrenzen, Excludes, Dedup, Einheiten, Marken."""
+"""Tests für den Matcher: Wortgrenzen, Excludes, Dedup, Einheiten, Marken, Multi-Markt."""
 from __future__ import annotations
 
 import json
 import pytest
 
-from src.matching.matcher import Matcher, _dedup, MatchResult
+from src.matching.matcher import Matcher, MatchedProduct
 from src.matching.wishlist import Wishlist, WishlistItem
 
 
 # ---------------------------------------------------------------------------
-# Hilfsfunktion: Mini-Offer-Dict für Tests
+# Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
 def make_offer(
@@ -20,12 +20,13 @@ def make_offer(
     sales_unit_raw: str | None = None,
     sales_unit: dict | None = None,
     category_ids: list[str] | None = None,
+    source: str = "aldi_nord",
 ) -> dict:
     if category_ids is None:
         category_ids = ["Angebote"]
     return {
-        "source": "aldi_nord",
-        "product_slug": name.lower().replace(" ", "-"),
+        "source": source,
+        "product_slug": f"{source}-{name.lower().replace(' ', '-')}",
         "name": name,
         "brand": brand,
         "short_description": None,
@@ -84,8 +85,6 @@ class TestWordBoundaries:
 
     def test_butter_matches_standalone(self):
         item = WishlistItem(name="Butter", keywords=["butter"])
-        # "Frische Butter" → "butter" ist eigenständiges Wort → \b greift
-        # "Markenbutter" würde NICHT matchen (Kompositum), das ist korrekt
         offers = [make_offer("Frische Butter")]
         assert len(matcher_for(item).match_item(item, offers)) == 1
 
@@ -95,10 +94,8 @@ class TestWordBoundaries:
         assert len(matcher_for(item).match_item(item, offers)) == 1
 
     def test_description_not_searched(self):
-        """Bourbon-Vanille-Waffeln hat 'Butter' nur in der Description, nicht im Namen."""
         item = WishlistItem(name="Butter", keywords=["butter"])
         offers = [make_offer("Bourbon-Vanille-Waffeln")]
-        # Name und Brand enthalten kein 'butter' → kein Match
         assert matcher_for(item).match_item(item, offers) == []
 
 
@@ -112,23 +109,22 @@ class TestExcludeKeywords:
                             exclude_keywords=["buttermilch"])
         offers = [
             make_offer("Frische Milch"),
-            make_offer("Buttermilch"),        # soll raus
+            make_offer("Buttermilch"),
         ]
         results = matcher_for(item).match_item(item, offers)
-        names = [r.offer["name"] for r in results]
+        names = [r.primary_offer["name"] for r in results]
         assert "Frische Milch" in names
         assert "Buttermilch" not in names
 
     def test_exclude_uses_word_boundary(self):
-        """'bourbon' als exclude soll nicht 'Bourb-Eis' treffen (falls kein ganzes Wort)."""
         item = WishlistItem(name="Butter", keywords=["butter"],
                             exclude_keywords=["bourbon"])
         offers = [
             make_offer("Butter"),
-            make_offer("Bourbon Butter"),   # soll raus
+            make_offer("Bourbon Butter"),
         ]
         results = matcher_for(item).match_item(item, offers)
-        names = [r.offer["name"] for r in results]
+        names = [r.primary_offer["name"] for r in results]
         assert "Butter" in names
         assert "Bourbon Butter" not in names
 
@@ -142,18 +138,19 @@ class TestExcludeKeywords:
         ]
         results = matcher_for(item).match_item(item, offers)
         assert len(results) == 1
-        assert results[0].offer["name"] == "Butter"
+        assert results[0].primary_offer["name"] == "Butter"
 
 
 # ---------------------------------------------------------------------------
-# Deduplizierungs-Tests
+# Deduplizierungs-Tests (Within-Market)
 # ---------------------------------------------------------------------------
 
 class TestDeduplication:
     def test_identical_name_price_unit_deduped(self):
+        """Gleicher Artikel doppelt im selben Markt → ein MatchedProduct, count=2."""
         item = WishlistItem(name="Milch", keywords=["milch"])
-        su = {"quantity": 1.0, "unit": "L", "packaging": "Packung", "multiplier": 1,
-              "raw": "1-L-Packung"}
+        su = {"quantity": 1.0, "unit": "L", "packaging": "Packung",
+              "multiplier": 1, "raw": "1-L-Packung"}
         offers = [
             make_offer("Frische Milch", brand="ARLA", sale_price=1.11,
                        sales_unit_raw="1-L-Packung", sales_unit=su),
@@ -162,9 +159,11 @@ class TestDeduplication:
         ]
         results = matcher_for(item).match_item(item, offers)
         assert len(results) == 1
-        assert results[0].duplicate_count == 2
+        assert results[0].primary_market_count == 2
+        assert results[0].alternative_offers == []
 
-    def test_different_price_not_deduped(self):
+    def test_different_price_same_source_not_merged(self):
+        """Gleicher Name, verschiedener Preis, selbe Source → 2 separate MatchedProducts."""
         item = WishlistItem(name="Milch", keywords=["milch"])
         offers = [
             make_offer("Frische Milch", sale_price=1.11),
@@ -174,11 +173,12 @@ class TestDeduplication:
         assert len(results) == 2
 
     def test_duplicate_count_three(self):
+        """Dreifach-Duplikat → ein MatchedProduct mit count=3."""
         item = WishlistItem(name="Cola", keywords=["cola"])
         offers = [make_offer("Cola", sale_price=0.99)] * 3
         results = matcher_for(item).match_item(item, offers)
         assert len(results) == 1
-        assert results[0].duplicate_count == 3
+        assert results[0].primary_market_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -220,14 +220,12 @@ class TestUnitFilter:
         assert matcher_for(item).match_item(item, offers) == []
 
     def test_unit_cross_family_rejected(self):
-        """kg filter soll keine ml-Produkte matchen."""
         item = WishlistItem(name="Produkt", keywords=["produkt"], unit_filter="kg")
         su = self._su(500.0, "ml")
         offers = [make_offer("Produkt", sales_unit=su)]
         assert matcher_for(item).match_item(item, offers) == []
 
     def test_multipack_total_quantity(self):
-        """6x1,5L → 9L gesamt ≥ 1L min_quantity."""
         item = WishlistItem(name="Cola", keywords=["cola"],
                             unit_filter="L", min_quantity=1.0)
         su = {"quantity": 1.5, "unit": "L", "packaging": "Flasche",
@@ -236,7 +234,6 @@ class TestUnitFilter:
         assert len(matcher_for(item).match_item(item, offers)) == 1
 
     def test_g_filter_same_family_as_kg(self):
-        """unit_filter='g' soll auch kg-Produkte matchen."""
         item = WishlistItem(name="Butter", keywords=["butter"],
                             unit_filter="g", min_quantity=250)
         su = self._su(0.25, "kg")
@@ -252,15 +249,14 @@ class TestBrandMatching:
     def test_brand_case_insensitive(self):
         item = WishlistItem(name="Cola", keywords=["cola"], brand="coca-cola")
         offers = [
-            make_offer("Original Taste", brand="COCA-COLA"),  # Aldi schreibt CAPS
+            make_offer("Original Taste", brand="COCA-COLA"),
             make_offer("Original Taste", brand="Pepsi"),
         ]
         results = matcher_for(item).match_item(item, offers)
         assert len(results) == 1
-        assert results[0].offer["brand"] == "COCA-COLA"
+        assert results[0].primary_offer["brand"] == "COCA-COLA"
 
     def test_allowed_brands_or_logic(self):
-        # "Stilles Wasser" → "wasser" als eigenes Wort (kein Kompositum)
         item = WishlistItem(name="Wasser", keywords=["wasser"],
                             allowed_brands=["VOLVIC", "EVIAN", "GEROLSTEINER"])
         offers = [
@@ -270,11 +266,10 @@ class TestBrandMatching:
         ]
         results = matcher_for(item).match_item(item, offers)
         assert len(results) == 2
-        brands = {r.offer["brand"] for r in results}
+        brands = {r.primary_offer["brand"] for r in results}
         assert brands == {"VOLVIC", "EVIAN"}
 
     def test_brand_and_allowed_brands_brand_takes_priority(self):
-        """Wenn 'brand' gesetzt ist, wird allowed_brands ignoriert."""
         item = WishlistItem(name="Cola", keywords=["cola"],
                             brand="COCA-COLA",
                             allowed_brands=["PEPSI"])
@@ -284,7 +279,7 @@ class TestBrandMatching:
         ]
         results = matcher_for(item).match_item(item, offers)
         assert len(results) == 1
-        assert results[0].offer["brand"] == "COCA-COLA"
+        assert results[0].primary_offer["brand"] == "COCA-COLA"
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +295,7 @@ class TestPriceFilters:
         ]
         results = matcher_for(item).match_item(item, offers)
         assert len(results) == 1
-        assert results[0].offer["sale_price"] == 1.99
+        assert results[0].primary_offer["sale_price"] == 1.99
 
     def test_min_discount_filter(self):
         item = WishlistItem(name="Cola", keywords=["cola"], min_discount_percent=20.0)
@@ -310,7 +305,7 @@ class TestPriceFilters:
         ]
         results = matcher_for(item).match_item(item, offers)
         assert len(results) == 1
-        assert results[0].offer["name"] == "Cola 1"
+        assert results[0].primary_offer["name"] == "Cola 1"
 
 
 # ---------------------------------------------------------------------------
@@ -335,12 +330,95 @@ class TestFoodFilter:
         assert len(results) == 1
 
     def test_explicit_categories_bypass_food_filter(self):
-        """Wenn categories explizit gesetzt → food_only greift nicht."""
         item = WishlistItem(name="Schraube", keywords=["schraube"],
                             categories=["werkzeug"])
-        # "Schraube" als eigenständiges Wort im Namen
         offers = [
             make_offer("Schraube M8", category_ids=["werkzeug"]),
         ]
         results = matcher_for(item, food_only=True).match_item(item, offers)
         assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Multi-Markt-Tests (Cross-Market-Grouping) — NEU
+# ---------------------------------------------------------------------------
+
+class TestCrossMarketGrouping:
+    def test_same_product_two_markets_primary_is_cheaper(self):
+        """
+        Nutella: Aldi 2.99€ und Kaufland 3.19€
+        → ein MatchedProduct, primary = Aldi (günstiger), Kaufland als Alternative
+        """
+        item = WishlistItem(name="Nutella", keywords=["nutella"])
+        aldi    = make_offer("Nutella", brand="FERRERO", sale_price=2.99,
+                             sales_unit_raw="450-g-Glas", source="aldi_nord")
+        kaufland = make_offer("Nutella", brand="FERRERO", sale_price=3.19,
+                              sales_unit_raw="450-g-Glas", source="kaufland")
+
+        results = matcher_for(item).match_item(item, [aldi, kaufland])
+
+        assert len(results) == 1
+        assert results[0].primary_offer["sale_price"] == 2.99
+        assert results[0].primary_offer["source"] == "aldi_nord"
+        assert len(results[0].alternative_offers) == 1
+        assert results[0].alternative_offers[0]["source"] == "kaufland"
+        assert results[0].alternative_offers[0]["sale_price"] == 3.19
+
+    def test_same_product_one_market_no_alternatives(self):
+        """
+        Butter nur bei Aldi → ein MatchedProduct ohne Alternativen.
+        """
+        item = WishlistItem(name="Butter", keywords=["butter"])
+        offers = [make_offer("Frische Butter", brand="ARLA", sale_price=1.99)]
+
+        results = matcher_for(item).match_item(item, offers)
+
+        assert len(results) == 1
+        assert results[0].alternative_offers == []
+        assert results[0].primary_market_count == 1
+
+    def test_three_different_products_three_matched_products(self):
+        """
+        Cola (Aldi), Milch (Kaufland), Butter (Aldi) — alle verschiedene Produkte
+        → drei separate MatchedProducts, keins mit Cross-Market-Alternative.
+        """
+        item = WishlistItem(name="Lebensmittel", keywords=["cola", "milch", "butter"])
+        offers = [
+            make_offer("Cola",         brand="COCA-COLA", sale_price=0.99, source="aldi_nord"),
+            make_offer("Frische Milch",brand="ARLA",      sale_price=1.11, source="kaufland"),
+            make_offer("Frische Butter",brand="ARLA",     sale_price=1.99, source="aldi_nord"),
+        ]
+
+        results = matcher_for(item).match_item(item, offers)
+
+        assert len(results) == 3
+        # Alle ohne Cross-Market-Alternativen (jedes Produkt nur bei einem Markt)
+        for r in results:
+            assert r.alternative_offers == []
+
+    def test_tied_price_any_is_primary(self):
+        """
+        Gleicher Preis bei beiden Märkten → irgendeiner wird primary,
+        der andere alternative — keine Exception, stabile Ausgabe.
+        """
+        item = WishlistItem(name="Wasser", keywords=["wasser"])
+        aldi     = make_offer("Stilles Wasser", sale_price=0.59,
+                              sales_unit_raw="1-L-Flasche", source="aldi_nord")
+        kaufland = make_offer("Stilles Wasser", sale_price=0.59,
+                              sales_unit_raw="1-L-Flasche", source="kaufland")
+
+        results = matcher_for(item).match_item(item, [aldi, kaufland])
+
+        assert len(results) == 1
+        assert results[0].primary_offer["sale_price"] == 0.59
+        assert len(results[0].alternative_offers) == 1
+        # Sicherstellen dass beide Sources vertreten sind
+        all_sources = {results[0].primary_offer["source"],
+                       results[0].alternative_offers[0]["source"]}
+        assert all_sources == {"aldi_nord", "kaufland"}
+
+    def test_return_type_is_matched_product(self):
+        item = WishlistItem(name="Cola", keywords=["cola"])
+        offers = [make_offer("Cola")]
+        results = matcher_for(item).match_item(item, offers)
+        assert all(isinstance(r, MatchedProduct) for r in results)
