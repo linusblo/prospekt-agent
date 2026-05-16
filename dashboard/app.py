@@ -18,6 +18,7 @@ from src.config.markets import get_display_name
 from src.db.repository import OfferRepository
 from src.matching.matcher import Matcher
 from src.matching.wishlist import Wishlist, WishlistItem
+from src.utils.formatting import format_german_date
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -138,7 +139,7 @@ def _offers_to_df(offers: list[dict]) -> pd.DataFrame:
             "Rabatt":     o.get("discount_percent"),
             "Inhalt":     o.get("sales_unit_raw") or "",
             "Basispreis": _fmt_base_price(o),
-            "Gültig bis": (o.get("valid_until") or "")[:10],
+            "Gültig bis": format_german_date(o.get("valid_until")),
             "Kategorie":  ", ".join(display_cats),
         })
     return pd.DataFrame(rows)
@@ -169,6 +170,122 @@ _PRICE_COLS = {
     "UVP":    st.column_config.NumberColumn("UVP €",    format="%.2f €"),
     "Rabatt": st.column_config.NumberColumn("Rabatt %", format="%.1f %%"),
 }
+
+_COL_WIDTHS = [1, 3, 2, 1.1, 1, 1.5, 1.2, 1.8]
+
+
+def _parse_iso_to_dt(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _starts_in_text(vf_str: str | None) -> str:
+    dt = _parse_iso_to_dt(vf_str)
+    if dt is None:
+        return "—"
+    days = (dt.date() - datetime.now(timezone.utc).date()).days
+    if days <= 0:
+        return "heute"
+    if days == 1:
+        return "morgen"
+    if days == 2:
+        return "übermorgen"
+    if days <= 13:
+        return f"in {days} Tagen"
+    return f"ab {dt.strftime('%d.%m.')}"
+
+
+def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = False) -> None:
+    """Rendert eine Wishlist-Gruppe (Header + Zeilen + Expander)."""
+    date_label = "Startet in" if upcoming else "Gültig bis"
+    n = len(products)
+
+    st.markdown(f"**{item_name}** — {n} Treffer")
+
+    h = st.columns(_COL_WIDTHS)
+    for col, lbl in zip(h, ["Bild", "Produkt", "Preis", "🚦", "Rabatt", "Inhalt/Basis", date_label, "Märkte"]):
+        col.markdown(f"**{lbl}**")
+
+    for prod in products:
+        o       = prod["primary"]
+        alts    = prod["alternatives"]
+        p_count = prod["primary_count"]
+        rating  = prod.get("rating")
+
+        if rating:
+            r_emoji = RATING_EMOJI.get(rating["level"], "⚪")
+            r_label = rating["label"].replace("Tendenz: ", "")
+            r_expl  = rating["explanation"]
+            n_pts   = rating.get("historic_count", 0)
+            r_help  = f"{r_expl}  ({n_pts} Datenpunkte)"
+        else:
+            r_emoji, r_label, r_help = "⚪", "Zu wenig Daten", "Noch kein historischer Preis."
+
+        market_label = get_display_name(o.get("source") or "")
+        if alts:
+            market_label += f" **+{len(alts)}**"
+        if p_count > 1:
+            market_label += f" *(×{p_count})*"
+
+        price    = o.get("sale_price") or 0.0
+        orig     = o.get("original_price")
+        disc     = o.get("discount_percent")
+        price_md = f"**{price:.2f} €**"
+        if orig:
+            price_md += f"  \n~~{orig:.2f} €~~"
+        card_p = o.get("card_price")
+        if card_p:
+            price_md += f"  \n🃏 {card_p:.2f} €*"
+
+        unit_raw = o.get("sales_unit_raw") or ""
+        bp_str   = _fmt_base_price(o)
+        content  = unit_raw + (f"  \n{bp_str}" if bp_str else "")
+
+        # Datumsspalte: "Startet in" oder "Gültig bis"
+        if upcoming:
+            date_val = _starts_in_text(o.get("valid_from"))
+        else:
+            date_val = format_german_date(o.get("valid_until"))
+
+        cols = st.columns(_COL_WIDTHS)
+        img_url = o.get("image_url")
+        if img_url:
+            cols[0].image(img_url, width=55)
+        else:
+            cols[0].write("")
+        prod_md = f"**{o.get('name', '')}**"
+        if o.get("brand"):
+            prod_md += f"  \n{o['brand']}"
+        cols[1].markdown(prod_md)
+        cols[2].markdown(price_md)
+        cols[3].metric(label=r_label, value=r_emoji, help=r_help)
+        cols[4].write(f"-{disc:.0f}%" if disc else "–")
+        cols[5].markdown(content or "–")
+        cols[6].write(date_val)
+        cols[7].markdown(market_label)
+
+        if alts:
+            with st.expander(f"Auch verfügbar bei {len(alts)} weiteren Märkten"):
+                alt_rows = []
+                for alt in alts:
+                    alt_bp   = _fmt_base_price(alt)
+                    alt_card = alt.get("card_price")
+                    preis_str = f"{alt.get('sale_price', 0):.2f} €"
+                    if alt_card:
+                        preis_str += f" (🃏 {alt_card:.2f} €*)"
+                    alt_rows.append({
+                        "Markt":      get_display_name(alt.get("source") or ""),
+                        "Preis":      preis_str,
+                        "Basispreis": alt_bp or "–",
+                        "Gültig bis": format_german_date(alt.get("valid_until")),
+                    })
+                st.dataframe(pd.DataFrame(alt_rows), hide_index=True, use_container_width=True)
+
+    st.divider()
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +483,12 @@ with tab_hits:
             from src.adapters.trinkgut import TrinkgutAdapter
             adapters = [AldiNordAdapter(), KauflandAdapter(), TrinkgutAdapter()]
             repo_ref = OfferRepository(DB_PATH)
+
+            # Abgelaufene zuerst bereinigen
+            cleaned = repo_ref.cleanup_expired_offers()
+            if cleaned:
+                st.info(f"🧹 {cleaned} abgelaufene Angebote bereinigt.")
+
             total = 0
             errors: list[str] = []
             for adp in adapters:
@@ -394,102 +517,43 @@ with tab_hits:
             "keine aktiven Angebote, oder alle Filter zu streng."
         )
     else:
-        st.caption(f"{total_products} Produkte")
+        # ── Produkte in "aktuell" und "kommend" aufteilen ──
+        now_dt = datetime.now(timezone.utc)
+
+        current_by_item: dict[str, list[dict]] = {}
+        upcoming_list: list[tuple[datetime, str, dict]] = []
 
         for item_name, products in matched.items():
-            if not products:
-                continue
-
-            st.markdown(f"**{item_name}** — {len(products)} Treffer")
-
-            # Spalten-Header: Bild | Produkt | Preis | 🚦 | Rabatt | Inhalt/Basis | Gültig | Märkte
-            h = st.columns([1, 3, 2, 1.1, 1, 1.5, 1.2, 1.8])
-            for col, lbl in zip(h, ["Bild", "Produkt", "Preis", "🚦", "Rabatt", "Inhalt/Basis", "Gültig bis", "Märkte"]):
-                col.markdown(f"**{lbl}**")
-
             for prod in products:
-                o       = prod["primary"]
-                alts    = prod["alternatives"]
-                p_count = prod["primary_count"]
-                rating  = prod.get("rating")
-
-                # Ampel — Native Streamlit (kein unsafe_allow_html)
-                if rating:
-                    r_emoji      = RATING_EMOJI.get(rating["level"], "⚪")
-                    r_label      = rating["label"].replace("Tendenz: ", "")
-                    r_expl       = rating["explanation"]
-                    n_pts        = rating.get("historic_count", 0)
-                    r_help       = f"{r_expl}  ({n_pts} Datenpunkte)"
+                vf_dt = _parse_iso_to_dt(prod["primary"].get("valid_from"))
+                if vf_dt and vf_dt > now_dt:
+                    upcoming_list.append((vf_dt, item_name, prod))
                 else:
-                    r_emoji      = "⚪"
-                    r_label      = "Zu wenig Daten"
-                    r_help       = "Noch kein historischer Preis verfügbar."
+                    current_by_item.setdefault(item_name, []).append(prod)
 
-                # Märkte-Badge
-                market_label = get_display_name(o.get("source") or "")
-                if alts:
-                    market_label += f" **+{len(alts)}**"
-                if p_count > 1:
-                    market_label += f" *(×{p_count})*"
+        # Kommende: erst nach valid_from, dann nach Wishlist-Name
+        upcoming_list.sort(key=lambda t: (t[0], t[1]))
+        upcoming_by_item: dict[str, list[dict]] = {}
+        for _, item_name, prod in upcoming_list:
+            upcoming_by_item.setdefault(item_name, []).append(prod)
 
-                # Preis-String
-                price = o.get("sale_price") or 0.0
-                orig  = o.get("original_price")
-                disc  = o.get("discount_percent")
-                price_md = f"**{price:.2f} €**"
-                if orig:
-                    price_md += f"  \n~~{orig:.2f} €~~"
-                card_p = o.get("card_price")
-                if card_p:
-                    price_md += f"  \n🃏 {card_p:.2f} €*"
+        n_current  = sum(len(v) for v in current_by_item.values())
+        n_upcoming = len(upcoming_list)
+        st.caption(f"{n_current} aktuelle · {n_upcoming} kommende Treffer")
 
-                # Inhalt + Basispreis
-                unit_raw = o.get("sales_unit_raw") or ""
-                bp_str   = _fmt_base_price(o)
-                content  = unit_raw
-                if bp_str:
-                    content += f"  \n{bp_str}"
+        # ── Abschnitt 1: Aktuelle Angebote ──
+        st.markdown("### 🛒 Aktuelle Angebote")
+        if current_by_item:
+            for item_name, products in current_by_item.items():
+                _render_offer_group(item_name, products, upcoming=False)
+        else:
+            st.info("Keine aktuellen Treffer — aber schau auch kommende Angebote unten.")
 
-                cols = st.columns([1, 3, 2, 1.1, 1, 1.5, 1.2, 1.8])
-                img_url = o.get("image_url")
-                if img_url:
-                    cols[0].image(img_url, width=55)
-                else:
-                    cols[0].write("")
-                prod_md = f"**{o.get('name', '')}**"
-                if o.get("brand"):
-                    prod_md += f"  \n{o['brand']}"
-                cols[1].markdown(prod_md)
-                cols[2].markdown(price_md)
-                # 🚦 Ampel: st.metric mit help-Parameter → native Streamlit-Tooltip (ℹ️)
-                cols[3].metric(label=r_label, value=r_emoji, help=r_help)
-                cols[4].write(f"-{disc:.0f}%" if disc else "–")
-                cols[5].markdown(content or "–")
-                cols[6].write((o.get("valid_until") or "")[:10] or "–")
-                cols[7].markdown(market_label)
-
-                if alts:
-                    with st.expander(f"Auch verfügbar bei {len(alts)} weiteren Märkten"):
-                        alt_rows = []
-                        for alt in alts:
-                            alt_bp = _fmt_base_price(alt)
-                            alt_card = alt.get("card_price")
-                            preis_str = f"{alt.get('sale_price', 0):.2f} €"
-                            if alt_card:
-                                preis_str += f" (🃏 {alt_card:.2f} €*)"
-                            alt_rows.append({
-                                "Markt":      get_display_name(alt.get("source") or ""),
-                                "Preis":      preis_str,
-                                "Basispreis": alt_bp or "–",
-                                "Gültig bis": (alt.get("valid_until") or "")[:10],
-                            })
-                        st.dataframe(
-                            pd.DataFrame(alt_rows),
-                            hide_index=True,
-                            use_container_width=True,
-                        )
-
-            st.divider()
+        # ── Abschnitt 2: Kommende Angebote ──
+        if upcoming_by_item:
+            st.markdown("### 🔮 Kommende Angebote (ab nächster Woche)")
+            for item_name, products in upcoming_by_item.items():
+                _render_offer_group(item_name, products, upcoming=True)
 
 # ── Tab 2: Wishlist ─────────────────────────────────────────────────────────
 with tab_wish:
@@ -673,7 +737,7 @@ with tab_hist:
                             alt.Chart(df_ch)
                             .mark_line(point=True)
                             .encode(
-                                x=alt.X("Datum:T", title="Datum"),
+                                x=alt.X("Datum:T", title="Datum", axis=alt.Axis(format="%d.%m.")),
                                 y=alt.Y("Preis:Q", title="Preis (€)",
                                         scale=alt.Scale(zero=False)),
                                 tooltip=["Datum:T", alt.Tooltip("Preis:Q", format=".2f")],

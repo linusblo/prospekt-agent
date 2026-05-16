@@ -353,6 +353,20 @@ class OfferRepository:
                 params.append(source)
             return conn.execute(query, params).fetchone()[0]
 
+    def cleanup_expired_offers(self) -> int:
+        """
+        Löscht abgelaufene Angebote aus der offers-Tabelle (valid_until < jetzt).
+        NIEMALS aus price_history — die Historie bleibt für Ampel/Chart erhalten.
+        Gibt Anzahl gelöschter Einträge zurück.
+        """
+        cutoff = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM offers WHERE valid_until IS NOT NULL AND valid_until < ?",
+                (cutoff,),
+            )
+            return cur.rowcount
+
     def cleanup_old_history(self, days: int = 180) -> int:
         """
         Löscht Einträge älter als 'days' Tage.

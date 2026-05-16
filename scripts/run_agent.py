@@ -41,6 +41,11 @@ def main() -> None:
     db_path = os.getenv("DB_PATH", "data/offers.db")
     repo = OfferRepository(db_path)
 
+    # ── Abgelaufene Angebote bereinigen ──
+    cleaned = repo.cleanup_expired_offers()
+    if cleaned:
+        log.info("Bereinigt: %d abgelaufene Angebote gelöscht", cleaned)
+
     # ── Angebote von allen Adaptern laden ──
     total_offers = 0
     for adapter in ADAPTERS:
