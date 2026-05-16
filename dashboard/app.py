@@ -403,9 +403,9 @@ with tab_hits:
             st.markdown(f"**{item_name}** — {len(products)} Treffer")
 
             # Spalten-Header: Bild | Produkt | Preis | 🚦 | Rabatt | Inhalt/Basis | Gültig | Märkte
-            h = st.columns([1, 3, 2, 0.7, 1, 1.5, 1.2, 1.8])
+            h = st.columns([1, 3, 2, 1.1, 1, 1.5, 1.2, 1.8])
             for col, lbl in zip(h, ["Bild", "Produkt", "Preis", "🚦", "Rabatt", "Inhalt/Basis", "Gültig bis", "Märkte"]):
-                col.markdown(f"<small><b>{lbl}</b></small>", unsafe_allow_html=True)
+                col.markdown(f"**{lbl}**")
 
             for prod in products:
                 o       = prod["primary"]
@@ -413,15 +413,17 @@ with tab_hits:
                 p_count = prod["primary_count"]
                 rating  = prod.get("rating")
 
-                # Ampel
+                # Ampel — Native Streamlit (kein unsafe_allow_html)
                 if rating:
-                    r_emoji = RATING_EMOJI.get(rating["level"], "⚪")
-                    r_expl  = rating["explanation"]
-                    r_label = rating["label"]
-                    if rating.get("median_price"):
-                        r_expl += f"\n\nDatenpunkte: {rating['historic_count']}"
+                    r_emoji      = RATING_EMOJI.get(rating["level"], "⚪")
+                    r_label      = rating["label"].replace("Tendenz: ", "")
+                    r_expl       = rating["explanation"]
+                    n_pts        = rating.get("historic_count", 0)
+                    r_help       = f"{r_expl}  ({n_pts} Datenpunkte)"
                 else:
-                    r_emoji, r_expl, r_label = "⚪", "Noch kein historischer Preis", "–"
+                    r_emoji      = "⚪"
+                    r_label      = "Zu wenig Daten"
+                    r_help       = "Noch kein historischer Preis verfügbar."
 
                 # Märkte-Badge
                 market_label = get_display_name(o.get("source") or "")
@@ -448,7 +450,7 @@ with tab_hits:
                 if bp_str:
                     content += f"  \n{bp_str}"
 
-                cols = st.columns([1, 3, 2, 0.7, 1, 1.5, 1.2, 1.8])
+                cols = st.columns([1, 3, 2, 1.1, 1, 1.5, 1.2, 1.8])
                 img_url = o.get("image_url")
                 if img_url:
                     cols[0].image(img_url, width=55)
@@ -456,14 +458,11 @@ with tab_hits:
                     cols[0].write("")
                 prod_md = f"**{o.get('name', '')}**"
                 if o.get("brand"):
-                    prod_md += f"  \n<small>{o['brand']}</small>"
-                cols[1].markdown(prod_md, unsafe_allow_html=True)
+                    prod_md += f"  \n{o['brand']}"
+                cols[1].markdown(prod_md)
                 cols[2].markdown(price_md)
-                cols[3].markdown(
-                    f"<span title='{r_label}: {r_expl}'>{r_emoji}</span>",
-                    unsafe_allow_html=True,
-                )
-                cols[3].caption(r_label.replace("Tendenz: ", "").replace("Zu wenig Daten", "⚪"))
+                # 🚦 Ampel: st.metric mit help-Parameter → native Streamlit-Tooltip (ℹ️)
+                cols[3].metric(label=r_label, value=r_emoji, help=r_help)
                 cols[4].write(f"-{disc:.0f}%" if disc else "–")
                 cols[5].markdown(content or "–")
                 cols[6].write((o.get("valid_until") or "")[:10] or "–")
