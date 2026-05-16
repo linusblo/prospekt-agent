@@ -367,6 +367,82 @@ class OfferRepository:
             )
             return cur.rowcount
 
+    def get_price_history_for_product(
+        self,
+        source: str,
+        brand_lower: str,
+        name_lower: str,
+        sales_unit_raw: str = "",
+        days: int = 90,
+    ) -> list[dict]:
+        """
+        Historische Preise der letzten N Tage für ein Produkt.
+        Matching case-insensitiv auf brand, name, sales_unit_raw.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT sale_price, base_price_value, scraped_at
+                FROM price_history
+                WHERE source = ?
+                  AND LOWER(COALESCE(brand, ''))          = ?
+                  AND LOWER(COALESCE(name,  ''))          = ?
+                  AND LOWER(COALESCE(sales_unit_raw, '')) = LOWER(?)
+                  AND scraped_at >= ?
+                ORDER BY scraped_at ASC
+                """,
+                (source, brand_lower, name_lower, sales_unit_raw, cutoff),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_price_history_for_chart(
+        self,
+        source: str,
+        brand_lower: str,
+        name_lower: str,
+        sales_unit_raw: str = "",
+        days: int = 90,
+    ) -> list[tuple[str, float]]:
+        """
+        Aggregiert Preishistorie pro Tag (1 Punkt/Tag = Tagesdurchschnitt).
+        Gibt Liste von (date_str, avg_price) zurück, sortiert nach Datum.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DATE(scraped_at) AS day, AVG(sale_price) AS avg_price
+                FROM price_history
+                WHERE source = ?
+                  AND LOWER(COALESCE(brand, ''))          = ?
+                  AND LOWER(COALESCE(name,  ''))          = ?
+                  AND LOWER(COALESCE(sales_unit_raw, '')) = LOWER(?)
+                  AND scraped_at >= ?
+                GROUP BY DATE(scraped_at)
+                ORDER BY day ASC
+                """,
+                (source, brand_lower, name_lower, sales_unit_raw, cutoff),
+            ).fetchall()
+        return [(row["day"], row["avg_price"]) for row in rows]
+
+    def get_distinct_products_from_history(self) -> list[dict]:
+        """Alle verschiedenen Produkte in price_history (für Produkt-Selector)."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT source, brand, name, sales_unit_raw, COUNT(*) AS data_points
+                FROM price_history
+                GROUP BY source, LOWER(COALESCE(brand,'')),
+                         LOWER(COALESCE(name,'')),
+                         LOWER(COALESCE(sales_unit_raw,''))
+                ORDER BY brand, name
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     # ------------------------------------------------------------------
 
     def add_wishlist_item(self, item: WishlistItem) -> int:

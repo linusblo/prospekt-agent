@@ -1,4 +1,4 @@
-"""Prospekt-Agent Streamlit Dashboard — Phase B."""
+"""Prospekt-Agent Streamlit Dashboard — Phase C2."""
 from __future__ import annotations
 
 import json
@@ -13,6 +13,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.analysis.price_rating import RATING_EMOJI
 from src.config.markets import get_display_name
 from src.db.repository import OfferRepository
 from src.matching.matcher import Matcher
@@ -61,14 +62,15 @@ def _distinct_categories() -> list[str]:
 @st.cache_data(ttl=60)
 def _load_matched_products() -> dict[str, list[dict]]:
     """
-    Gibt gematche Produkte als serialisierbare Dict-Struktur zurück.
-    Format: item_name → [{primary, primary_count, alternatives}, ...]
+    Gibt gematchte Produkte inkl. Ampel-Bewertung als serialisierbare Dict-Struktur zurück.
+    Format: item_name → [{primary, primary_count, alternatives, rating}, ...]
     """
+    repo = OfferRepository(DB_PATH)
     wishlist = Wishlist.from_db(DB_PATH)
     if not wishlist.active_items:
         return {}
-    offers = OfferRepository(DB_PATH).get_active_offers()
-    results_by_item = Matcher(wishlist, food_only=True).match_all(offers)
+    offers = repo.get_active_offers()
+    results_by_item = Matcher(wishlist, food_only=True, repository=repo).match_all(offers)
     out: dict[str, list[dict]] = {}
     for item_name, products in results_by_item.items():
         out[item_name] = [
@@ -76,6 +78,15 @@ def _load_matched_products() -> dict[str, list[dict]]:
                 "primary":       mp.primary_offer,
                 "primary_count": mp.primary_market_count,
                 "alternatives":  mp.alternative_offers,
+                "rating": {
+                    "level":        mp.price_rating.level,
+                    "label":        mp.price_rating.label,
+                    "explanation":  mp.price_rating.explanation,
+                    "historic_count": mp.price_rating.historic_count,
+                    "min_price":    mp.price_rating.min_price,
+                    "max_price":    mp.price_rating.max_price,
+                    "median_price": mp.price_rating.median_price,
+                } if mp.price_rating else None,
             }
             for mp in products
         ]
@@ -338,8 +349,8 @@ if not Path(DB_PATH).exists():
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_hits, tab_wish, tab_all, tab_status = st.tabs(
-    ["🎯 Treffer", "📋 Wishlist", "🛒 Alle Angebote", "ℹ️ Status"]
+tab_hits, tab_wish, tab_all, tab_hist, tab_status = st.tabs(
+    ["🎯 Treffer", "📋 Wishlist", "🛒 Alle Angebote", "📈 Preis-Historie", "ℹ️ Status"]
 )
 
 # ── Tab 1: Treffer ──────────────────────────────────────────────────────────
@@ -391,15 +402,26 @@ with tab_hits:
 
             st.markdown(f"**{item_name}** — {len(products)} Treffer")
 
-            # Spalten-Header
-            h = st.columns([1, 3, 2, 1.2, 1.5, 1.5, 2])
-            for col, lbl in zip(h, ["Bild", "Produkt", "Preis", "Rabatt", "Inhalt/Basis", "Gültig bis", "Märkte"]):
+            # Spalten-Header: Bild | Produkt | Preis | 🚦 | Rabatt | Inhalt/Basis | Gültig | Märkte
+            h = st.columns([1, 3, 2, 0.7, 1, 1.5, 1.2, 1.8])
+            for col, lbl in zip(h, ["Bild", "Produkt", "Preis", "🚦", "Rabatt", "Inhalt/Basis", "Gültig bis", "Märkte"]):
                 col.markdown(f"<small><b>{lbl}</b></small>", unsafe_allow_html=True)
 
             for prod in products:
                 o       = prod["primary"]
                 alts    = prod["alternatives"]
                 p_count = prod["primary_count"]
+                rating  = prod.get("rating")
+
+                # Ampel
+                if rating:
+                    r_emoji = RATING_EMOJI.get(rating["level"], "⚪")
+                    r_expl  = rating["explanation"]
+                    r_label = rating["label"]
+                    if rating.get("median_price"):
+                        r_expl += f"\n\nDatenpunkte: {rating['historic_count']}"
+                else:
+                    r_emoji, r_expl, r_label = "⚪", "Noch kein historischer Preis", "–"
 
                 # Märkte-Badge
                 market_label = get_display_name(o.get("source") or "")
@@ -426,7 +448,7 @@ with tab_hits:
                 if bp_str:
                     content += f"  \n{bp_str}"
 
-                cols = st.columns([1, 3, 2, 1.2, 1.5, 1.5, 2])
+                cols = st.columns([1, 3, 2, 0.7, 1, 1.5, 1.2, 1.8])
                 img_url = o.get("image_url")
                 if img_url:
                     cols[0].image(img_url, width=55)
@@ -437,10 +459,15 @@ with tab_hits:
                     prod_md += f"  \n<small>{o['brand']}</small>"
                 cols[1].markdown(prod_md, unsafe_allow_html=True)
                 cols[2].markdown(price_md)
-                cols[3].write(f"-{disc:.0f}%" if disc else "–")
-                cols[4].markdown(content or "–")
-                cols[5].write((o.get("valid_until") or "")[:10] or "–")
-                cols[6].markdown(market_label)
+                cols[3].markdown(
+                    f"<span title='{r_label}: {r_expl}'>{r_emoji}</span>",
+                    unsafe_allow_html=True,
+                )
+                cols[3].caption(r_label.replace("Tendenz: ", "").replace("Zu wenig Daten", "⚪"))
+                cols[4].write(f"-{disc:.0f}%" if disc else "–")
+                cols[5].markdown(content or "–")
+                cols[6].write((o.get("valid_until") or "")[:10] or "–")
+                cols[7].markdown(market_label)
 
                 if alts:
                     with st.expander(f"Auch verfügbar bei {len(alts)} weiteren Märkten"):
@@ -570,7 +597,144 @@ with tab_all:
     st.caption(f"{len(df_all)} Produkte")
     st.dataframe(df_all, use_container_width=True, hide_index=True, column_config=_PRICE_COLS)
 
-# ── Tab 4: Status ────────────────────────────────────────────────────────────
+# ── Tab 4: Preis-Historie ────────────────────────────────────────────────────
+with tab_hist:
+    st.subheader("Preis-Historie")
+
+    repo_h = OfferRepository(DB_PATH)
+    all_products = repo_h.get_distinct_products_from_history()
+
+    if not all_products:
+        st.info("Noch keine Historien-Daten. Bitte zuerst `run_agent.py` ausführen.")
+    else:
+        # Produkt-Selector
+        options_map: dict[str, dict] = {}
+        for p in all_products:
+            brand = p["brand"] or "?"
+            name  = p["name"]
+            unit  = p["sales_unit_raw"] or "?"
+            mkt   = get_display_name(p["source"])
+            pts   = p["data_points"]
+            label = f"{brand} – {name} ({unit}) [{mkt}] · {pts} Datenpunkte"
+            options_map[label] = p
+
+        selected_label = st.selectbox(
+            "Produkt auswählen",
+            [""] + list(options_map),
+            format_func=lambda x: x or "— bitte wählen —",
+        )
+
+        if selected_label:
+            sel = options_map[selected_label]
+            brand_l = (sel["brand"] or "").lower()
+            name_l  = sel["name"].lower()
+            unit_r  = sel["sales_unit_raw"] or ""
+
+            # Chart-Daten laden
+            chart_data = repo_h.get_price_history_for_chart(
+                source=sel["source"],
+                brand_lower=brand_l,
+                name_lower=name_l,
+                sales_unit_raw=unit_r,
+            )
+
+            # Vollständige History für Stats
+            history = repo_h.get_price_history_for_product(
+                source=sel["source"],
+                brand_lower=brand_l,
+                name_lower=name_l,
+                sales_unit_raw=unit_r,
+            )
+
+            prices = [h["sale_price"] for h in history if h.get("sale_price")]
+
+            if prices:
+                import statistics as _stats
+
+                min_p    = min(prices)
+                max_p    = max(prices)
+                med_p    = _stats.median(prices)
+                n_pts    = len(prices)
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Min Preis",    f"{min_p:.2f} €")
+                c2.metric("Max Preis",    f"{max_p:.2f} €")
+                c3.metric("Median",       f"{med_p:.2f} €")
+                c4.metric("Datenpunkte",  n_pts)
+
+                # Chart
+                if chart_data:
+                    df_ch = pd.DataFrame(chart_data, columns=["Datum", "Preis"])
+                    df_ch["Datum"] = pd.to_datetime(df_ch["Datum"])
+
+                    try:
+                        import altair as alt
+
+                        line = (
+                            alt.Chart(df_ch)
+                            .mark_line(point=True)
+                            .encode(
+                                x=alt.X("Datum:T", title="Datum"),
+                                y=alt.Y("Preis:Q", title="Preis (€)",
+                                        scale=alt.Scale(zero=False)),
+                                tooltip=["Datum:T", alt.Tooltip("Preis:Q", format=".2f")],
+                            )
+                        )
+
+                        layers = [line]
+                        if n_pts >= 10:
+                            quants = _stats.quantiles(prices, n=5)
+                            p20, p60 = quants[0], quants[2]
+                            for val, color, legend in [
+                                (p20, "green",  "P20 (günstig)"),
+                                (p60, "orange", "P60 (Schwelle)"),
+                            ]:
+                                rule = (
+                                    alt.Chart(pd.DataFrame({"y": [val], "Linie": [legend]}))
+                                    .mark_rule(color=color, strokeDash=[5, 4])
+                                    .encode(y="y:Q")
+                                )
+                                layers.append(rule)
+
+                        st.altair_chart(
+                            alt.layer(*layers).properties(height=320),
+                            use_container_width=True,
+                        )
+
+                    except ImportError:
+                        # Fallback ohne Altair
+                        st.line_chart(df_ch.set_index("Datum"))
+
+                # Letzte 5 Preisänderungen
+                if len(history) >= 2:
+                    st.markdown("**Letzte Einträge**")
+                    last5 = sorted(history, key=lambda h: h["scraped_at"], reverse=True)[:5]
+                    st.dataframe(
+                        pd.DataFrame([{
+                            "Datum":  h["scraped_at"][:10],
+                            "Preis":  f"{h['sale_price']:.2f} €",
+                        } for h in last5]),
+                        hide_index=True,
+                        use_container_width=False,
+                    )
+
+                # Cross-Market-Hinweis (wenn andere Märkte existieren)
+                all_markets_for_product = [
+                    p for p in all_products
+                    if p["name"].lower() == sel["name"].lower()
+                    and (p["brand"] or "").lower() == (sel["brand"] or "").lower()
+                    and p["source"] != sel["source"]
+                ]
+                if all_markets_for_product:
+                    st.info(
+                        "Auch verfügbar bei: "
+                        + ", ".join(
+                            f"{get_display_name(p['source'])} ({p['data_points']} Einträge)"
+                            for p in all_markets_for_product
+                        )
+                    )
+
+# ── Tab 5: Status ────────────────────────────────────────────────────────────
 with tab_status:
     st.subheader("System-Status")
 

@@ -3,8 +3,13 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .wishlist import Wishlist, WishlistItem
+from src.analysis.price_rating import PriceRating, rate_offer
+
+if TYPE_CHECKING:
+    from src.db.repository import OfferRepository
 
 # ---------------------------------------------------------------------------
 # Einheiten-Konvertierung
@@ -72,11 +77,13 @@ class MatchedProduct:
     alternative_offers:     Angebote des gleichen Produkts bei anderen Märkten,
                             sortiert nach Preis — leer wenn nur ein Markt
     wishlist_item:          das zugehörige Wishlist-Item
+    price_rating:           Ampel-Bewertung (None wenn kein Repository übergeben)
     """
     wishlist_item: WishlistItem
     primary_offer: dict
     primary_market_count: int = 1
     alternative_offers: list[dict] = field(default_factory=list)
+    price_rating: PriceRating | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +91,15 @@ class MatchedProduct:
 # ---------------------------------------------------------------------------
 
 class Matcher:
-    def __init__(self, wishlist: Wishlist, food_only: bool = True) -> None:
-        self._wishlist = wishlist
-        self._food_only = food_only
+    def __init__(
+        self,
+        wishlist: Wishlist,
+        food_only: bool = True,
+        repository: OfferRepository | None = None,
+    ) -> None:
+        self._wishlist    = wishlist
+        self._food_only   = food_only
+        self._repo        = repository
 
     def match_all(self, offers: list[dict]) -> dict[str, list[MatchedProduct]]:
         """Gibt für jedes aktive WishlistItem die MatchedProducts zurück."""
@@ -101,13 +114,27 @@ class Matcher:
         2. Zwei-Phasen-Gruppierung:
            Phase 1 — Within-Market-Dedup: (brand, name, price, unit, source)
            Phase 2 — Cross-Market-Merge: (brand, name, unit) nur über versch. Sources
+        3. Optionale Ampel-Bewertung (wenn repository übergeben)
         """
         raw: list[_MatchResult] = []
         for offer in offers:
             passed, matched_on = self._passes_filters(item, offer)
             if passed:
                 raw.append(_MatchResult(wishlist_item=item, offer=offer, matched_on=matched_on))
-        return _group_cross_market(raw)
+        products = _group_cross_market(raw)
+        if self._repo is not None:
+            for mp in products:
+                o = mp.primary_offer
+                mp.price_rating = rate_offer(
+                    source           = o.get("source") or "",
+                    brand            = o.get("brand")  or "",
+                    name             = o.get("name")   or "",
+                    sales_unit_raw   = o.get("sales_unit_raw") or "",
+                    current_price    = o.get("sale_price") or 0.0,
+                    current_base_price = o.get("base_price_value"),
+                    repository       = self._repo,
+                )
+        return products
 
     # ------------------------------------------------------------------
     # Filter-Logik (unverändert)
