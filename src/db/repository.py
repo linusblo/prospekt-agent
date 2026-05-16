@@ -173,6 +173,54 @@ UPDATE wishlist_items SET
 WHERE id = ?
 """
 
+# ---------------------------------------------------------------------------
+# Price-History-Tabelle
+# ---------------------------------------------------------------------------
+
+_CREATE_PRICE_HISTORY_TABLE = """
+CREATE TABLE IF NOT EXISTS price_history (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    source                TEXT    NOT NULL,
+    product_slug          TEXT    NOT NULL,
+    brand                 TEXT,
+    name                  TEXT    NOT NULL,
+    sale_price            REAL    NOT NULL,
+    original_price        REAL,
+    discount_percent      REAL,
+    base_price_value      REAL,
+    base_price_value_max  REAL,
+    base_price_unit       TEXT,
+    base_price_has_prefix INTEGER NOT NULL DEFAULT 0,
+    card_price            REAL,
+    card_base_price_value REAL,
+    sales_unit_raw        TEXT,
+    valid_from            TEXT,
+    valid_until           TEXT,
+    scraped_at            TEXT    NOT NULL,
+    UNIQUE(source, product_slug, scraped_at)
+)
+"""
+
+_CREATE_HISTORY_INDEX_LOOKUP = """
+CREATE INDEX IF NOT EXISTS idx_price_history_lookup
+    ON price_history(source, brand, name, sales_unit_raw)
+"""
+
+_CREATE_HISTORY_INDEX_DATE = """
+CREATE INDEX IF NOT EXISTS idx_price_history_date
+    ON price_history(scraped_at)
+"""
+
+_INSERT_HISTORY = """
+INSERT OR IGNORE INTO price_history (
+    source, product_slug, brand, name,
+    sale_price, original_price, discount_percent,
+    base_price_value, base_price_value_max, base_price_unit,
+    base_price_has_prefix, card_price, card_base_price_value,
+    sales_unit_raw, valid_from, valid_until, scraped_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
 
 class OfferRepository:
     def __init__(self, db_path: str = "data/offers.db") -> None:
@@ -197,6 +245,9 @@ class OfferRepository:
         with self._connection() as conn:
             conn.execute(_CREATE_OFFERS_TABLE)
             conn.execute(_CREATE_WISHLIST_TABLE)
+            conn.execute(_CREATE_PRICE_HISTORY_TABLE)
+            conn.execute(_CREATE_HISTORY_INDEX_LOOKUP)
+            conn.execute(_CREATE_HISTORY_INDEX_DATE)
             # Idempotente Schema-Migrationen für bestehende DBs
             _add_column_if_missing(conn, "offers", "card_price",                "REAL")
             _add_column_if_missing(conn, "offers", "base_price_value_max",      "REAL")
@@ -277,6 +328,46 @@ class OfferRepository:
             if active_only:
                 query += " WHERE active = 1"
             return conn.execute(query).fetchone()[0]
+
+    # ------------------------------------------------------------------
+    # Price-History
+    # ------------------------------------------------------------------
+
+    def save_price_history_entry(self, offer: Offer) -> None:
+        """Schreibt einen neuen Eintrag in price_history — KEIN UPSERT."""
+        with self._connection() as conn:
+            conn.execute(_INSERT_HISTORY, _history_row(offer))
+
+    def save_price_history_batch(self, offers: list[Offer]) -> int:
+        """Schreibt alle Offers als neue History-Einträge. Gibt Anzahl zurück."""
+        with self._connection() as conn:
+            conn.executemany(_INSERT_HISTORY, [_history_row(o) for o in offers])
+        return len(offers)
+
+    def count_price_history(self, source: str | None = None) -> int:
+        with self._connection() as conn:
+            query = "SELECT COUNT(*) FROM price_history"
+            params: list[object] = []
+            if source:
+                query += " WHERE source = ?"
+                params.append(source)
+            return conn.execute(query, params).fetchone()[0]
+
+    def cleanup_old_history(self, days: int = 180) -> int:
+        """
+        Löscht Einträge älter als 'days' Tage.
+        Vorbereitet für Phase C2 — noch NICHT automatisch aufgerufen.
+        Gibt Anzahl der gelöschten Zeilen zurück.
+        """
+        from datetime import timedelta
+        cutoff_str = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM price_history WHERE scraped_at < ?", (cutoff_str,)
+            )
+            return cur.rowcount
+
+    # ------------------------------------------------------------------
 
     def add_wishlist_item(self, item: WishlistItem) -> int:
         """INSERT — schlägt mit IntegrityError fehl wenn name bereits existiert."""
@@ -403,6 +494,28 @@ def _offer_to_row(offer: Offer) -> tuple:
         offer.card_base_price_value_max,
         offer.card_base_price_unit,
         offer.card_discount_percent,
+    )
+
+
+def _history_row(offer: Offer) -> tuple:
+    return (
+        offer.source.value,
+        offer.product_slug,
+        offer.brand,
+        offer.name,
+        offer.sale_price,
+        offer.original_price,
+        offer.discount_percent,
+        offer.base_price_value,
+        offer.base_price_value_max,
+        offer.base_price_unit,
+        int(offer.base_price_has_prefix),
+        offer.card_price,
+        offer.card_base_price_value,
+        offer.sales_unit_raw,
+        offer.valid_from.isoformat() if offer.valid_from else None,
+        offer.valid_until.isoformat() if offer.valid_until else None,
+        offer.scraped_at.isoformat(),
     )
 
 

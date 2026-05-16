@@ -49,8 +49,10 @@ def main() -> None:
             offers = adapter.fetch_offers()
             if offers:
                 repo.upsert_many(offers)
+                repo.save_price_history_batch(offers)
                 total_offers += len(offers)
-                log.info("  %d Angebote gespeichert", len(offers))
+                log.info("  %d Angebote gespeichert, %d neue Historieneinträge",
+                         len(offers), len(offers))
             else:
                 log.warning("  Keine Angebote gefunden")
         except Exception:

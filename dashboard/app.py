@@ -363,6 +363,7 @@ with tab_hits:
                         offers = adp.fetch_offers()
                         if offers:
                             total += repo_ref.upsert_many(offers)
+                            repo_ref.save_price_history_batch(offers)
                     except Exception as exc:
                         errors.append(f"{get_display_name(adp.source_name)}: {exc}")
             st.cache_data.clear()
