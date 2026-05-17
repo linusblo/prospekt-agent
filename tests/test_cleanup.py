@@ -112,3 +112,46 @@ class TestCleanupExpiredOffers:
 
         assert deleted == 1
         assert repo.count() == 1
+
+
+# ---------------------------------------------------------------------------
+# 0€-Filter
+# ---------------------------------------------------------------------------
+
+def _make_offer(slug: str, sale_price: float = 1.99) -> Offer:
+    return Offer(
+        source=Supermarket.ALDI_NORD,
+        product_slug=slug,
+        name="Testartikel",
+        sale_price=sale_price,
+        category_ids=["Angebote"],
+        scraped_at=datetime.now(timezone.utc),
+    )
+
+
+class TestZeroPriceFilter:
+    def test_zero_price_offer_not_saved(self, repo):
+        """Angebote mit sale_price=0.00 werden nicht gespeichert."""
+        repo.upsert_offer(_make_offer("gratis", sale_price=0.0))
+        assert repo.count() == 0
+
+    def test_normal_price_offer_saved(self, repo):
+        """Angebote mit normalem Preis werden gespeichert."""
+        repo.upsert_offer(_make_offer("paid", sale_price=1.99))
+        assert repo.count() == 1
+
+    def test_upsert_many_filters_zero_price(self, repo):
+        """upsert_many gibt nur die Anzahl GÜLTIGER Angebote zurück."""
+        offers = [
+            _make_offer("zero",  sale_price=0.0),
+            _make_offer("paid1", sale_price=0.99),
+            _make_offer("paid2", sale_price=1.49),
+        ]
+        count = repo.upsert_many(offers)
+        assert count == 2
+        assert repo.count() == 2
+
+    def test_negative_price_also_filtered(self, repo):
+        """Negative Preise werden ebenfalls ignoriert."""
+        repo.upsert_offer(_make_offer("negative", sale_price=-1.0))
+        assert repo.count() == 0

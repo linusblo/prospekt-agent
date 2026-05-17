@@ -100,6 +100,32 @@ class TestWordBoundaries:
         offers = [make_offer("Bourbon-Vanille-Waffeln")]
         assert matcher_for(item).match_item(item, offers) == []
 
+    # ── Normalisierungs-Tests ────────────────────────────────────────
+
+    def test_coca_keyword_matches_coca_cola_brand(self):
+        """'coca' matched Brand 'COCA-COLA' nach Bindestrich-Normalisierung."""
+        item = WishlistItem(name="Cola", keywords=["coca"])
+        offers = [make_offer("Original Taste", brand="COCA-COLA")]
+        assert len(matcher_for(item).match_item(item, offers)) == 1
+
+    def test_cola_keyword_matches_coca_cola_brand(self):
+        """'cola' matched die zweite Hälfte von 'COCA-COLA'."""
+        item = WishlistItem(name="Cola", keywords=["cola"])
+        offers = [make_offer("Original Taste", brand="COCA-COLA")]
+        assert len(matcher_for(item).match_item(item, offers)) == 1
+
+    def test_fanta_keyword_matches_comma_separated_name(self):
+        """'fanta' matched in 'Coca-Cola, Fanta o. Sprite' (kommagetrennt)."""
+        item = WishlistItem(name="Fanta", keywords=["fanta"])
+        offers = [make_offer("Coca-Cola, Fanta o. Sprite")]
+        assert len(matcher_for(item).match_item(item, offers)) == 1
+
+    def test_milch_still_not_matching_buttermilch_after_normalization(self):
+        """Normalisierung darf 'Buttermilch' nicht in 'butter milch' aufteilen."""
+        item = WishlistItem(name="Milch", keywords=["milch"])
+        offers = [make_offer("Buttermilch")]
+        assert matcher_for(item).match_item(item, offers) == []
+
 
 # ---------------------------------------------------------------------------
 # Exclude-Keywords-Tests
@@ -270,6 +296,15 @@ class TestBrandMatching:
         assert len(results) == 2
         brands = {r.primary_offer["brand"] for r in results}
         assert brands == {"VOLVIC", "EVIAN"}
+
+    def test_allowed_brand_matches_comma_separated_offer_brand(self):
+        """
+        'COCA-COLA' in allowed_brands matched Offer-Brand 'COCA-COLA, FANTA, SPRITE'
+        (Kaufland führt oft mehrere Marken in einer Brand-Zeile).
+        """
+        item = WishlistItem(name="Cola", keywords=["cola"], allowed_brands=["COCA-COLA"])
+        offers = [make_offer("Softdrinks", brand="COCA-COLA, FANTA, SPRITE")]
+        assert len(matcher_for(item).match_item(item, offers)) == 1
 
     def test_brand_and_allowed_brands_brand_takes_priority(self):
         item = WishlistItem(name="Cola", keywords=["cola"],

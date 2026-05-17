@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from .wishlist import Wishlist, WishlistItem
 from src.analysis.price_rating import PriceRating, rate_offer
+from src.utils.text_normalize import normalize_for_matching
 
 if TYPE_CHECKING:
     from src.db.repository import OfferRepository
@@ -202,11 +203,25 @@ class Matcher:
         return True, matched_on
 
     def _matches_brand(self, item: WishlistItem, offer: dict) -> bool:
-        offer_brand = (offer.get("brand") or "").lower()
+        """
+        Prüft Brand-Filter mit Wortgrenzen auf normalisiertem Text.
+        Erlaubt z.B. 'COCA-COLA' in allowed_brands zu matchen, wenn die
+        Offer-Brand 'COCA-COLA, FANTA, SPRITE' lautet.
+        """
+        offer_brand_norm = normalize_for_matching(offer.get("brand") or "")
         if item.brand:
-            return offer_brand == item.brand.lower()
+            item_norm = normalize_for_matching(item.brand)
+            if not item_norm:
+                return True
+            return bool(re.search(r"\b" + re.escape(item_norm) + r"\b", offer_brand_norm))
         if item.allowed_brands:
-            return offer_brand in {b.lower() for b in item.allowed_brands}
+            for allowed in item.allowed_brands:
+                allowed_norm = normalize_for_matching(allowed)
+                if not allowed_norm:
+                    continue
+                if re.search(r"\b" + re.escape(allowed_norm) + r"\b", offer_brand_norm):
+                    return True
+            return False
         return True
 
     def _matches_unit_and_quantity(self, item: WishlistItem, offer: dict) -> bool:
@@ -371,14 +386,26 @@ def _group_cross_market(results: list[_MatchResult]) -> list[MatchedProduct]:
 # ---------------------------------------------------------------------------
 
 def _offer_text(offer: dict) -> str:
-    name = (offer.get("name") or "").lower()
-    brand = (offer.get("brand") or "").lower()
-    return f"{name} {brand}"
+    """
+    Gibt normalisierten Such-Text aus name + brand zurück.
+    Bindestriche, Kommas, Schrägstriche → Leerzeichen, damit
+    \b-Wortgrenzen konsistent funktionieren.
+
+    Beispiel: brand "COCA-COLA" → "coca cola" im Suchtext.
+    """
+    name  = offer.get("name")  or ""
+    brand = offer.get("brand") or ""
+    return normalize_for_matching(f"{name} {brand}")
 
 
 def _matches_words(terms: set[str], text: str) -> bool:
+    """
+    Prüft ob mind. 1 Begriff mit Wortgrenzen im Text vorkommt.
+    Beide Seiten werden normalisiert, damit Sonderzeichen kein Problem sind.
+    """
     for term in terms:
-        if re.search(r"\b" + re.escape(term.lower()) + r"\b", text):
+        normalized = normalize_for_matching(term)
+        if re.search(r"\b" + re.escape(normalized) + r"\b", text):
             return True
     return False
 

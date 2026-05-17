@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
+
+log = logging.getLogger(__name__)
 
 from ..models.offer import Offer
 from ..matching.wishlist import WishlistItem
@@ -301,13 +304,20 @@ class OfferRepository:
     # ------------------------------------------------------------------
 
     def upsert_offer(self, offer: Offer) -> None:
+        if offer.sale_price <= 0:
+            log.debug("Überspringe '%s': Preis %.2f €", offer.name, offer.sale_price)
+            return
         with self._connection() as conn:
             conn.execute(_UPSERT_OFFER, _offer_to_row(offer))
 
     def upsert_many(self, offers: list[Offer]) -> int:
+        valid   = [o for o in offers if o.sale_price > 0]
+        skipped = len(offers) - len(valid)
+        if skipped:
+            log.info("Überspringe %d Angebote mit Preis 0.00 €", skipped)
         with self._connection() as conn:
-            conn.executemany(_UPSERT_OFFER, [_offer_to_row(o) for o in offers])
-        return len(offers)
+            conn.executemany(_UPSERT_OFFER, [_offer_to_row(o) for o in valid])
+        return len(valid)
 
     def get_active_offers(self, source: str | None = None) -> list[dict]:
         """Angebote deren valid_until in der Zukunft liegt (oder kein Datum gesetzt)."""
