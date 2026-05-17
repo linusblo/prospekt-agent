@@ -125,23 +125,30 @@ INSERT INTO wishlist_items (
     name, brand, allowed_brands, keywords, exclude_keywords,
     excluded_packaging, categories, max_price, min_discount_percent,
     unit_filter, min_quantity, supermarkets, active, notes,
-    created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    created_at, updated_at,
+    alert_enabled, alert_max_base_price, alert_max_total_price,
+    alert_recipients, alert_only_green
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
-    brand               = excluded.brand,
-    allowed_brands      = excluded.allowed_brands,
-    keywords            = excluded.keywords,
-    exclude_keywords    = excluded.exclude_keywords,
-    excluded_packaging  = excluded.excluded_packaging,
-    categories          = excluded.categories,
-    max_price           = excluded.max_price,
-    min_discount_percent = excluded.min_discount_percent,
-    unit_filter         = excluded.unit_filter,
-    min_quantity        = excluded.min_quantity,
-    supermarkets        = excluded.supermarkets,
-    active              = excluded.active,
-    notes               = excluded.notes,
-    updated_at          = excluded.updated_at
+    brand                 = excluded.brand,
+    allowed_brands        = excluded.allowed_brands,
+    keywords              = excluded.keywords,
+    exclude_keywords      = excluded.exclude_keywords,
+    excluded_packaging    = excluded.excluded_packaging,
+    categories            = excluded.categories,
+    max_price             = excluded.max_price,
+    min_discount_percent  = excluded.min_discount_percent,
+    unit_filter           = excluded.unit_filter,
+    min_quantity          = excluded.min_quantity,
+    supermarkets          = excluded.supermarkets,
+    active                = excluded.active,
+    notes                 = excluded.notes,
+    updated_at            = excluded.updated_at,
+    alert_enabled         = excluded.alert_enabled,
+    alert_max_base_price  = excluded.alert_max_base_price,
+    alert_max_total_price = excluded.alert_max_total_price,
+    alert_recipients      = excluded.alert_recipients,
+    alert_only_green      = excluded.alert_only_green
 """
 
 _INSERT_WISHLIST = """
@@ -149,28 +156,53 @@ INSERT INTO wishlist_items (
     name, brand, allowed_brands, keywords, exclude_keywords,
     excluded_packaging, categories, max_price, min_discount_percent,
     unit_filter, min_quantity, supermarkets, active, notes,
-    created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    created_at, updated_at,
+    alert_enabled, alert_max_base_price, alert_max_total_price,
+    alert_recipients, alert_only_green
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?)
 """
 
 _UPDATE_WISHLIST_BY_ID = """
 UPDATE wishlist_items SET
-    name                 = ?,
-    brand                = ?,
-    allowed_brands       = ?,
-    keywords             = ?,
-    exclude_keywords     = ?,
-    excluded_packaging   = ?,
-    categories           = ?,
-    max_price            = ?,
-    min_discount_percent = ?,
-    unit_filter          = ?,
-    min_quantity         = ?,
-    supermarkets         = ?,
-    active               = ?,
-    notes                = ?,
-    updated_at           = ?
+    name                  = ?,
+    brand                 = ?,
+    allowed_brands        = ?,
+    keywords              = ?,
+    exclude_keywords      = ?,
+    excluded_packaging    = ?,
+    categories            = ?,
+    max_price             = ?,
+    min_discount_percent  = ?,
+    unit_filter           = ?,
+    min_quantity          = ?,
+    supermarkets          = ?,
+    active                = ?,
+    notes                 = ?,
+    updated_at            = ?,
+    alert_enabled         = ?,
+    alert_max_base_price  = ?,
+    alert_max_total_price = ?,
+    alert_recipients      = ?,
+    alert_only_green      = ?
 WHERE id = ?
+"""
+
+# ---------------------------------------------------------------------------
+# Alerts-Sent-Tabelle
+# ---------------------------------------------------------------------------
+
+_CREATE_ALERTS_SENT_TABLE = """
+CREATE TABLE IF NOT EXISTS alerts_sent (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    wishlist_item_name TEXT    NOT NULL,
+    offer_source       TEXT    NOT NULL,
+    offer_slug         TEXT    NOT NULL,
+    alert_type         TEXT    NOT NULL,
+    sent_at            TEXT    NOT NULL,
+    recipients         TEXT    NOT NULL,
+    valid_from         TEXT,
+    UNIQUE(wishlist_item_name, offer_source, offer_slug, alert_type, valid_from)
+)
 """
 
 # ---------------------------------------------------------------------------
@@ -248,6 +280,7 @@ class OfferRepository:
             conn.execute(_CREATE_PRICE_HISTORY_TABLE)
             conn.execute(_CREATE_HISTORY_INDEX_LOOKUP)
             conn.execute(_CREATE_HISTORY_INDEX_DATE)
+            conn.execute(_CREATE_ALERTS_SENT_TABLE)
             # Idempotente Schema-Migrationen für bestehende DBs
             _add_column_if_missing(conn, "offers", "card_price",                "REAL")
             _add_column_if_missing(conn, "offers", "base_price_value_max",      "REAL")
@@ -256,6 +289,12 @@ class OfferRepository:
             _add_column_if_missing(conn, "offers", "card_base_price_value_max", "REAL")
             _add_column_if_missing(conn, "offers", "card_base_price_unit",      "TEXT")
             _add_column_if_missing(conn, "offers", "card_discount_percent",     "REAL")
+            # Phase C3: Alert-Spalten in wishlist_items
+            _add_column_if_missing(conn, "wishlist_items", "alert_enabled",         "INTEGER NOT NULL DEFAULT 0")
+            _add_column_if_missing(conn, "wishlist_items", "alert_max_base_price",  "REAL")
+            _add_column_if_missing(conn, "wishlist_items", "alert_max_total_price", "REAL")
+            _add_column_if_missing(conn, "wishlist_items", "alert_recipients",      "TEXT")
+            _add_column_if_missing(conn, "wishlist_items", "alert_only_green",      "INTEGER NOT NULL DEFAULT 0")
 
     # ------------------------------------------------------------------
     # Offers
@@ -480,7 +519,7 @@ class OfferRepository:
             return cursor.lastrowid  # type: ignore[return-value]
 
     def update_wishlist_item(self, item_id: int, item: WishlistItem) -> None:
-        """UPDATE WHERE id = ?  (name + created_at bleiben veränderbar)"""
+        """UPDATE WHERE id = ?"""
         now = datetime.now(timezone.utc).isoformat()
         row = (
             item.name,
@@ -497,7 +536,12 @@ class OfferRepository:
             json.dumps(item.supermarkets),
             int(item.active),
             item.notes,
-            now,      # updated_at
+            now,
+            int(item.alert_enabled),
+            item.alert_max_base_price,
+            item.alert_max_total_price,
+            json.dumps(item.alert_recipients),
+            int(item.alert_only_green),
             item_id,  # WHERE id = ?
         )
         with self._connection() as conn:
@@ -562,6 +606,61 @@ class OfferRepository:
                 "SELECT 1 FROM wishlist_items WHERE name = ?", (name,)
             ).fetchone()
         return row is not None
+
+    # ------------------------------------------------------------------
+    # Alerts
+    # ------------------------------------------------------------------
+
+    def has_alert_been_sent(
+        self,
+        wishlist_item_name: str,
+        source: str,
+        slug: str,
+        alert_type: str,
+        valid_from: str | None,
+    ) -> bool:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM alerts_sent
+                WHERE wishlist_item_name = ?
+                  AND offer_source = ?
+                  AND offer_slug   = ?
+                  AND alert_type   = ?
+                  AND (valid_from = ? OR (valid_from IS NULL AND ? IS NULL))
+                """,
+                (wishlist_item_name, source, slug, alert_type, valid_from, valid_from),
+            ).fetchone()
+        return row is not None
+
+    def save_alert_sent(
+        self,
+        wishlist_item_name: str,
+        source: str,
+        slug: str,
+        alert_type: str,
+        valid_from: str | None,
+        recipients: list[str],
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO alerts_sent
+                    (wishlist_item_name, offer_source, offer_slug,
+                     alert_type, sent_at, recipients, valid_from)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (wishlist_item_name, source, slug, alert_type,
+                 now, json.dumps(recipients), valid_from),
+            )
+
+    def count_alerts_sent_today(self) -> int:
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self._connection() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM alerts_sent WHERE sent_at >= ?", (today,)
+            ).fetchone()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -647,8 +746,13 @@ def _wishlist_to_row(item: WishlistItem, now: str) -> tuple:
         json.dumps(item.supermarkets),
         int(item.active),
         item.notes,
-        now,   # created_at — nur beim ersten INSERT gesetzt, danach nicht überschrieben
-        now,   # updated_at — wird bei jedem Upsert aktualisiert
+        now,   # created_at
+        now,   # updated_at
+        int(item.alert_enabled),
+        item.alert_max_base_price,
+        item.alert_max_total_price,
+        json.dumps(item.alert_recipients),
+        int(item.alert_only_green),
     )
 
 
@@ -676,4 +780,9 @@ def _row_to_wishlist_item(row: sqlite3.Row) -> WishlistItem:
         supermarkets=_jload(row["supermarkets"]),
         active=bool(row["active"]),
         notes=row["notes"],
+        alert_enabled=bool(row["alert_enabled"] or 0),
+        alert_max_base_price=row["alert_max_base_price"],
+        alert_max_total_price=row["alert_max_total_price"],
+        alert_recipients=_jload(row["alert_recipients"]),
+        alert_only_green=bool(row["alert_only_green"] or 0),
     )

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.analysis.price_rating import RATING_EMOJI
 from src.config.markets import get_display_name
+from src.config.settings import settings
 from src.db.repository import OfferRepository
 from src.matching.matcher import Matcher
 from src.matching.wishlist import Wishlist, WishlistItem
@@ -401,6 +402,34 @@ def _wishlist_form(edit_id: int | None = None) -> None:
             value=ex.notes or "" if ex else "",
         )
 
+    # ── Alarm-Einstellungen ──────────────────────────────────────────────
+    with st.expander("🔔 Alarm-Einstellungen"):
+        alert_enabled = st.toggle(
+            "Alarm aktivieren",
+            value=ex.alert_enabled if ex else False,
+        )
+        alert_max_base_price = st.number_input(
+            "Max. Basispreis (€/Einheit, 0 = kein Limit)",
+            min_value=0.0, step=0.01, format="%.2f",
+            value=float(ex.alert_max_base_price) if ex and ex.alert_max_base_price else 0.0,
+            help="Du wirst benachrichtigt, wenn der Liter-/Kilopreis unter diesen Wert fällt.",
+        )
+        alert_max_total_price = st.number_input(
+            "Max. Gesamtpreis (€, 0 = kein Limit)",
+            min_value=0.0, step=0.01, format="%.2f",
+            value=float(ex.alert_max_total_price) if ex and ex.alert_max_total_price else 0.0,
+            help="Du wirst benachrichtigt, wenn der Artikelpreis unter diesen Wert fällt.",
+        )
+        alert_recipients_raw = st.text_input(
+            "E-Mail-Empfänger (kommagetrennt)",
+            value=_join_tags(ex.alert_recipients) if ex else "",
+            help="Leer = Standard-Adresse aus .env (SMTP_EMAIL).",
+        )
+        alert_only_green = st.toggle(
+            "Nur bei 🟢 grüner Ampel alarmieren",
+            value=ex.alert_only_green if ex else False,
+        )
+
     st.divider()
     col_save, col_cancel = st.columns(2)
     save_clicked   = col_save.button("💾 Speichern", type="primary", use_container_width=True)
@@ -440,6 +469,11 @@ def _wishlist_form(edit_id: int | None = None) -> None:
             supermarkets     = supermarkets,
             active           = active,
             notes            = notes.strip() or None,
+            alert_enabled         = alert_enabled,
+            alert_max_base_price  = alert_max_base_price  if alert_max_base_price  > 0 else None,
+            alert_max_total_price = alert_max_total_price if alert_max_total_price > 0 else None,
+            alert_recipients      = _parse_tags(alert_recipients_raw),
+            alert_only_green      = alert_only_green,
         )
 
         # ── Speichern ──
@@ -514,6 +548,23 @@ with tab_hits:
                     st.error(f"Fehler: {e}")
             if total:
                 st.success(f"✅ {total} Angebote aktualisiert.")
+
+            # ── Alert-Prüfung nach Aktualisierung ──
+            if settings.email_configured:
+                with st.spinner("Prüfe Alarm-Schwellen…"):
+                    from src.notifications.email_sender import EmailSender
+                    from src.notifications.alert_checker import check_and_send_alerts
+                    _repo   = OfferRepository(DB_PATH)
+                    _wl     = Wishlist.from_db(DB_PATH)
+                    _offers = _repo.get_active_offers()
+                    _m      = Matcher(_wl, food_only=True, repository=_repo)
+                    _prods  = [mp for ps in _m.match_all(_offers).values() for mp in ps]
+                    _sent   = check_and_send_alerts(
+                        _prods, _repo, EmailSender(settings),
+                        settings.DEFAULT_ALERT_RECIPIENTS,
+                    )
+                    if _sent:
+                        st.info(f"🔔 {_sent} Alarm-E-Mail(s) versendet.")
 
     matched = _load_matched_products()
     total_products = sum(len(v) for v in matched.values())
@@ -826,11 +877,31 @@ with tab_status:
 
     active_wish = sum(1 for i in wish_r if i.get("active"))
 
+    alert_wish = sum(1 for i in wish_r if i.get("alert_enabled"))
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Angebote gesamt",   len(all_o))
     c2.metric("Davon noch gültig", len(act_o))
     c3.metric("Wishlist aktiv",    active_wish)
     c4.metric("Letzter Scrape",    last_scrape_rel, help=last_scrape_abs)
+
+    st.divider()
+
+    # ── E-Mail / Alert-Status ──
+    repo_st = OfferRepository(DB_PATH)
+    alerts_today = repo_st.count_alerts_sent_today()
+    email_ok = "✅ konfiguriert" if settings.email_configured else "❌ nicht konfiguriert"
+
+    ca, cb, cc = st.columns(3)
+    ca.metric("E-Mail",           email_ok)
+    cb.metric("Aktive Alarme",    alert_wish, help="Wishlist-Einträge mit aktivem Alarm")
+    cc.metric("Alarme heute",     alerts_today)
+
+    if not settings.email_configured:
+        st.warning(
+            "Keine SMTP-Zugangsdaten in `.env` — Alarm-E-Mails deaktiviert.  \n"
+            "Bitte `SMTP_EMAIL` und `SMTP_PASSWORD` in `.env` setzen."
+        )
 
     st.divider()
     st.code(f"DB-Pfad: {Path(DB_PATH).absolute()}")

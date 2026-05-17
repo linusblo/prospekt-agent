@@ -24,6 +24,7 @@ from src.adapters.aldi_nord import AldiNordAdapter
 from src.adapters.kaufland import KauflandAdapter
 from src.adapters.trinkgut import TrinkgutAdapter
 from src.adapters.base import SupermarketAdapter
+from src.config.settings import settings
 from src.db.repository import OfferRepository
 from src.matching.matcher import Matcher
 from src.matching.wishlist import Wishlist
@@ -87,7 +88,7 @@ def main() -> None:
 
     # ── Matching über alle aktiven Angebote ──
     active_offers = repo.get_active_offers()
-    matcher = Matcher(wishlist, food_only=True)
+    matcher = Matcher(wishlist, food_only=True, repository=repo)
     results_by_item = matcher.match_all(active_offers)
 
     any_match = False
@@ -103,6 +104,23 @@ def main() -> None:
 
     if not any_match:
         print("\nKeine Wunschlisten-Treffer in den aktuellen Angeboten.")
+
+    # ── E-Mail-Alarme prüfen ──
+    if settings.email_configured:
+        from src.notifications.email_sender import EmailSender
+        from src.notifications.alert_checker import check_and_send_alerts
+
+        all_products = [mp for prods in results_by_item.values() for mp in prods]
+        sender = EmailSender(settings)
+        sent = check_and_send_alerts(
+            all_products, repo, sender, settings.DEFAULT_ALERT_RECIPIENTS
+        )
+        if sent:
+            log.info("%d Alarm-E-Mail(s) versendet.", sent)
+        else:
+            log.info("Keine Alarme ausgelöst.")
+    else:
+        log.info("E-Mail nicht konfiguriert → Alarm-Prüfung übersprungen.")
 
     log.info("Fertig.")
 

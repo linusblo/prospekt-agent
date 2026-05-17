@@ -28,6 +28,12 @@ class WishlistItem(BaseModel):
     supermarkets: list[str] = []         # leer = alle aktiven Adapter
     active: bool = True
     notes: str | None = None
+    # Alarm-Einstellungen
+    alert_enabled: bool = False
+    alert_max_base_price: float | None = None   # €/Einheit (z.B. 0.70 €/L)
+    alert_max_total_price: float | None = None  # €/Artikel (z.B. 0.99 €)
+    alert_recipients: list[str] = []            # leer = DEFAULT_ALERT_RECIPIENTS
+    alert_only_green: bool = False              # nur bei 🟢 alarmieren
 
 
 class Wishlist(BaseModel):
