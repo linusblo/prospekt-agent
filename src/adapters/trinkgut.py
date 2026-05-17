@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup, Tag
 from .base import SupermarketAdapter
 from ..models.offer import Offer, Supermarket
 from ..models.trinkgut_description_parser import TrinkgutDescriptionParser
+from src.utils.brand_resolver import resolve_brand as _resolve_brand
 
 log = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ class TrinkgutAdapter(SupermarketAdapter):
             source          = Supermarket.TRINKGUT,
             product_slug    = product_slug,
             name            = name,
-            brand           = _extract_brand(name),
+            brand           = _resolve_brand(name),
             short_description = description or None,
             sale_price      = sale_price,
             base_price_value = parsed.base_price_value,

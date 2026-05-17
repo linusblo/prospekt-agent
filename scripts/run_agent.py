@@ -47,8 +47,17 @@ def main() -> None:
         log.info("Bereinigt: %d abgelaufene Angebote gelöscht", cleaned)
 
     # ── Angebote von allen Adaptern laden ──
+    # Adapter ohne Datums-Felder vorab bereinigen
+    # (Trinkgut hat kein valid_until → veraltete Einträge akkumulieren sonst)
+    _SOURCES_WITHOUT_DATES = {"trinkgut"}
+
     total_offers = 0
     for adapter in ADAPTERS:
+        if adapter.source_name in _SOURCES_WITHOUT_DATES:
+            deleted = repo.delete_all_offers_for_source(adapter.source_name)
+            if deleted:
+                log.info("Trinkgut: %d veraltete Einträge vor dem Scrapen gelöscht", deleted)
+
         log.info("Lade Angebote von %s …", adapter.source_name)
         try:
             offers = adapter.fetch_offers()

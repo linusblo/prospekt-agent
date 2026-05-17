@@ -76,9 +76,10 @@ def _load_matched_products() -> dict[str, list[dict]]:
     for item_name, products in results_by_item.items():
         out[item_name] = [
             {
-                "primary":       mp.primary_offer,
-                "primary_count": mp.primary_market_count,
-                "alternatives":  mp.alternative_offers,
+                "primary":        mp.primary_offer,
+                "primary_count":  mp.primary_market_count,
+                "alternatives":   mp.alternative_offers,
+                "variant_names":  mp.variant_names,
                 "rating": {
                     "level":        mp.price_rating.level,
                     "label":        mp.price_rating.label,
@@ -211,10 +212,12 @@ def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = F
         col.markdown(f"**{lbl}**")
 
     for prod in products:
-        o       = prod["primary"]
-        alts    = prod["alternatives"]
-        p_count = prod["primary_count"]
-        rating  = prod.get("rating")
+        o             = prod["primary"]
+        alts          = prod["alternatives"]
+        p_count       = prod["primary_count"]
+        rating        = prod.get("rating")
+        variant_names = prod.get("variant_names") or []
+        n_variants    = len(variant_names)
 
         if rating:
             r_emoji = RATING_EMOJI.get(rating["level"], "⚪")
@@ -257,9 +260,14 @@ def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = F
             cols[0].image(img_url, width=55)
         else:
             cols[0].write("")
-        prod_md = f"**{o.get('name', '')}**"
+        if n_variants > 1:
+            prod_md = f"**{n_variants} Sorten verfügbar**"
+        else:
+            prod_md = f"**{o.get('name', '')}**"
         if o.get("brand"):
             prod_md += f"  \n{o['brand']}"
+        if n_variants > 1:
+            prod_md += f"  \n*{' · '.join(variant_names)}*"
         cols[1].markdown(prod_md)
         cols[2].markdown(price_md)
         cols[3].metric(label=r_label, value=r_emoji, help=r_help)

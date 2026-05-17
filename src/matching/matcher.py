@@ -76,6 +76,10 @@ class MatchedProduct:
                             (Aldi hat manchmal denselben Artikel mehrfach)
     alternative_offers:     Angebote des gleichen Produkts bei anderen Märkten,
                             sortiert nach Preis — leer wenn nur ein Markt
+    variant_names:          Alle Produkt-Namen die zur selben Aktion gehören
+                            (gleicher Markt, gleicher Preis, gleiche Verpackung).
+                            Enthält immer mind. den primary_offer.name.
+                            Leer = kein Varianten-Grouping durchgeführt.
     wishlist_item:          das zugehörige Wishlist-Item
     price_rating:           Ampel-Bewertung (None wenn kein Repository übergeben)
     """
@@ -83,6 +87,7 @@ class MatchedProduct:
     primary_offer: dict
     primary_market_count: int = 1
     alternative_offers: list[dict] = field(default_factory=list)
+    variant_names: list[str] = field(default_factory=list)
     price_rating: PriceRating | None = None
 
 
@@ -245,12 +250,18 @@ def _group_cross_market(results: list[_MatchResult]) -> list[MatchedProduct]:
     """
     Phase 1 — Within-Market-Dedup:
       Schlüssel: (brand, name, sale_price, sales_unit_raw, source)
-      → Identische Aldi-Duplikate werden kollabiert (Zähler primary_market_count)
+      → Identische Duplikate kollabiert (Zähler primary_market_count)
+
+    Phase 1.5 (NEU) — Variant-Grouping:
+      Schlüssel: (source, brand, sale_price, sales_unit_raw, valid_from, valid_until)
+      → Gleicher Markt, gleicher Preis, gleiche Packung, aber VERSCHIEDENE Namen
+        = Sorten-Varianten → zu einem MatchedProduct zusammengefasst,
+          alle Namen in variant_names gespeichert.
+      → Verschiedene Preise bei gleicher Source bleiben separat.
 
     Phase 2 — Cross-Market-Merge:
       Schlüssel: (brand, name, sales_unit_raw)
       → Nur über VERSCHIEDENE sources zusammenführen.
-        Gleiche source + verschiedener Preis = verschiedene Produkte → separat.
     """
     if not results:
         return []
@@ -270,70 +281,86 @@ def _group_cross_market(results: list[_MatchResult]) -> list[MatchedProduct]:
         )
         within.setdefault(key, []).append(r)
 
-    # Reduzierte Liste: ein Offer pro Gruppe mit Zähler
+    # Ein Eintrag pro Gruppe mit Duplikat-Zähler
     deduped: list[tuple[dict, int]] = [
         (group[0].offer, len(group)) for group in within.values()
     ]
 
-    # ---------- Phase 2: Cross-Market-Merge ----------
-    # Gruppieren nach (brand, name, unit)
-    cross: dict[tuple, list[tuple[dict, int]]] = {}
+    # ---------- Phase 1.5: Variant-Grouping ----------
+    # Key: (source, brand, price, unit, valid_from, valid_until) — ohne name!
+    variant_groups: dict[tuple, list[tuple[dict, int]]] = {}
     for offer, count in deduped:
+        key = (
+            offer.get("source") or "",
+            (offer.get("brand") or "").lower(),
+            offer.get("sale_price"),
+            (offer.get("sales_unit_raw") or "").lower(),
+            offer.get("valid_from") or "",
+            offer.get("valid_until") or "",
+        )
+        variant_groups.setdefault(key, []).append((offer, count))
+
+    # Repräsentant + alle Namen
+    variant_deduped: list[tuple[dict, int, list[str]]] = []
+    for group in variant_groups.values():
+        rep_offer, rep_count = group[0]
+        all_names = [o.get("name") or "" for o, _ in group]
+        variant_deduped.append((rep_offer, rep_count, all_names))
+
+    # ---------- Phase 2: Cross-Market-Merge ----------
+    cross: dict[tuple, list[tuple[dict, int, list[str]]]] = {}
+    for (offer, count, names) in variant_deduped:
         key = (
             (offer.get("brand") or "").lower(),
             (offer.get("name") or "").lower(),
             (offer.get("sales_unit_raw") or "").lower(),
         )
-        cross.setdefault(key, []).append((offer, count))
+        cross.setdefault(key, []).append((offer, count, names))
 
     out: list[MatchedProduct] = []
 
     for group in cross.values():
-        # Offers nach Source aufteilen
-        by_source: dict[str, list[tuple[dict, int]]] = {}
-        for offer, count in group:
+        by_source: dict[str, list[tuple[dict, int, list[str]]]] = {}
+        for offer, count, names in group:
             src = offer.get("source") or ""
-            by_source.setdefault(src, []).append((offer, count))
+            by_source.setdefault(src, []).append((offer, count, names))
 
         if len(by_source) == 1:
-            # Nur eine Source → kein Cross-Market-Merge, Einträge bleiben separat
-            for offer, count in group:
+            for offer, count, names in group:
                 out.append(MatchedProduct(
                     wishlist_item=wishlist_item,
                     primary_offer=offer,
                     primary_market_count=count,
                     alternative_offers=[],
+                    variant_names=names,
                 ))
         else:
-            # Mehrere Sources → je Source das günstigste Angebot wählen.
-            # Teurere Angebote derselben Source werden als eigenständige
-            # MatchedProducts ohne Alternativen ausgegeben.
-            source_bests: list[tuple[dict, int]] = []
+            source_bests: list[tuple[dict, int, list[str]]] = []
             for src_offers in by_source.values():
                 src_offers.sort(key=lambda oc: oc[0].get("sale_price") or 999.0)
                 source_bests.append(src_offers[0])
-                # "Extra"-Varianten derselben Source (verschiedene Preise)
-                for extra_offer, extra_count in src_offers[1:]:
+                for extra_offer, extra_count, extra_names in src_offers[1:]:
                     out.append(MatchedProduct(
                         wishlist_item=wishlist_item,
                         primary_offer=extra_offer,
                         primary_market_count=extra_count,
                         alternative_offers=[],
+                        variant_names=extra_names,
                     ))
 
-            # Bestes Angebot über alle Sources wählen
             source_bests.sort(key=lambda oc: (
                 oc[0].get("sale_price") or 999.0,
                 oc[0].get("base_price_value") or 999.0,
             ))
-            primary_offer, primary_count = source_bests[0]
-            alternatives = [o for o, _ in source_bests[1:]]
+            primary_offer, primary_count, primary_names = source_bests[0]
+            alternatives = [o for o, _, _ in source_bests[1:]]
 
             out.append(MatchedProduct(
                 wishlist_item=wishlist_item,
                 primary_offer=primary_offer,
                 primary_market_count=primary_count,
                 alternative_offers=alternatives,
+                variant_names=primary_names,
             ))
 
     return out

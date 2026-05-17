@@ -353,6 +353,19 @@ class OfferRepository:
                 params.append(source)
             return conn.execute(query, params).fetchone()[0]
 
+    def delete_all_offers_for_source(self, source: str) -> int:
+        """
+        Löscht ALLE Offers einer Source — nützlich für Adapter ohne Datums-Felder
+        (z.B. Trinkgut), damit veraltete Angebote nicht akkumulieren.
+        price_history bleibt UNANGETASTET.
+        Gibt Anzahl gelöschter Einträge zurück.
+        """
+        with self._connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM offers WHERE source = ?", (source,)
+            )
+            return cur.rowcount
+
     def cleanup_expired_offers(self) -> int:
         """
         Löscht abgelaufene Angebote aus der offers-Tabelle (valid_until < jetzt).

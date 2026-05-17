@@ -3,47 +3,42 @@ from __future__ import annotations
 
 import pytest
 
-from src.adapters.trinkgut import TrinkgutAdapter, _extract_brand, _parse_price
+from src.adapters.trinkgut import TrinkgutAdapter, _parse_price
+from src.utils.brand_resolver import resolve_brand
 from src.models.offer import Supermarket
 
 
 # ---------------------------------------------------------------------------
-# _extract_brand
+# resolve_brand (aus brand_resolver, wird jetzt von Trinkgut genutzt)
 # ---------------------------------------------------------------------------
 
-class TestExtractBrand:
-    def test_bitburger_pils(self):
-        assert _extract_brand("Bitburger Pils") == "BITBURGER"
+class TestResolveBrandViaAdapter:
+    """Smoke-Tests der wichtigsten Fälle — vollständige Tests in test_brand_resolver.py."""
 
-    def test_veltins_pilsener(self):
-        assert _extract_brand("Veltins Pilsener o. Fassbrause") == "VELTINS"
+    def test_bitburger_pils(self):
+        assert resolve_brand("Bitburger Pils") == "BITBURGER"
 
     def test_brinkhoffs_with_apostrophe(self):
-        assert _extract_brand("Brinkhoff's") == "BRINKHOFF'S"
+        assert resolve_brand("Brinkhoff's") == "BRINKHOFF'S"
 
-    def test_dr_oetker_abbreviation(self):
-        """Erstes Wort endet auf '.' → zwei Wörter als Marke."""
-        assert _extract_brand("Dr. Oetker Tiefkühlpizza") == "DR. OETKER"
+    def test_jules_mumm_multi_word(self):
+        assert resolve_brand("Jules Mumm Sekt") == "JULES MUMM"
 
-    def test_short_first_word_takes_two(self):
-        """Erstes Wort < 3 Zeichen → zwei Wörter."""
-        assert _extract_brand("AK Racer Energy") == "AK RACER"
+    def test_don_simon_multi_word(self):
+        assert resolve_brand("Don Simon Sangria Premium o. Saluti") == "DON SIMON"
 
-    def test_single_word_name(self):
-        """Nur ein Wort → dieses Wort als Marke."""
-        assert _extract_brand("Bitburger") == "BITBURGER"
-
-    def test_none_input(self):
-        assert _extract_brand(None) is None  # type: ignore[arg-type]
+    def test_the_real_cola(self):
+        assert resolve_brand("The Real Cola o. Limonaden") == "THE REAL COLA"
 
     def test_empty_string(self):
-        assert _extract_brand("") is None
+        assert resolve_brand("") is None
 
     def test_uppercase_result(self):
-        assert _extract_brand("krombacher Pils") == "KROMBACHER"
+        result = resolve_brand("Bitburger Pils")
+        assert result == result.upper()
 
-    def test_brand_from_mixed_case(self):
-        assert _extract_brand("Coca-Cola Zero Sugar") == "COCA-COLA"
+    def test_krombacher(self):
+        assert resolve_brand("Krombacher Pils Frische Fässchen") == "KROMBACHER"
 
 
 # ---------------------------------------------------------------------------
