@@ -23,6 +23,7 @@ log = logging.getLogger("run_agent")
 from src.adapters.aldi_nord import AldiNordAdapter
 from src.adapters.kaufland import KauflandAdapter
 from src.adapters.trinkgut import TrinkgutAdapter
+from src.adapters.edeka import EdekaAdapter
 from src.adapters.base import SupermarketAdapter
 from src.config.settings import settings
 from src.db.repository import OfferRepository
@@ -34,6 +35,10 @@ ADAPTERS: list[SupermarketAdapter] = [
     KauflandAdapter(),
     TrinkgutAdapter(),
 ]
+
+# Edeka nur wenn Filial-ID konfiguriert
+if settings.EDEKA_MARKET_ID:
+    ADAPTERS.append(EdekaAdapter(settings.EDEKA_MARKET_ID))
 
 
 def main() -> None:

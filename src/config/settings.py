@@ -26,6 +26,13 @@ class Settings:
                 "SMTP_EMAIL oder SMTP_PASSWORD fehlt in .env — "
                 "E-Mail-Alarm deaktiviert. Konfiguriere beide Werte für Benachrichtigungen."
             )
+        # Edeka: Filial-ID (leer → Edeka-Adapter wird nicht geladen)
+        self.EDEKA_MARKET_ID: str = os.getenv("EDEKA_MARKET_ID", "071115")
+        if not self.EDEKA_MARKET_ID:
+            log.warning(
+                "EDEKA_MARKET_ID fehlt in .env — Edeka-Adapter deaktiviert. "
+                "Setze EDEKA_MARKET_ID=<FilialID> um Edeka-Angebote zu laden."
+            )
 
 
 # Modulweite Singleton-Instanz
