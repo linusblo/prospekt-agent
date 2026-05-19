@@ -38,12 +38,9 @@ _BASE_URL   = "https://www.edeka.de"
 _MARKET_URL = f"{_BASE_URL}/maerkte/{{market_id}}/angebote/"
 
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "de-DE,de;q=0.9",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "de-DE,de;q=0.9",
 }
 
 _UUID_RE = re.compile(r"^#angebot-(.+)$")
@@ -81,10 +78,12 @@ class EdekaAdapter(SupermarketAdapter):
             return Path(self._html_file).read_text(encoding="utf-8")
 
         log.info("Edeka: Lade %s", self._url)
-        resp = requests.get(
+        from curl_cffi import requests as curl_requests
+        resp = curl_requests.get(
             self._url,
             headers=_HEADERS,
             allow_redirects=True,
+            impersonate="chrome120",
             timeout=30,
         )
         resp.raise_for_status()
@@ -124,6 +123,7 @@ class EdekaAdapter(SupermarketAdapter):
         # Produktname aus <h3>
         h3   = dialog.find("h3")
         name = h3.get_text(strip=True) if h3 else ""
+        name = name.replace("Angebot:", "").strip()
         if not name:
             return None
 

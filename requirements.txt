@@ -10,5 +10,8 @@ rapidfuzz>=3.5.0
 streamlit>=1.35.0
 pandas>=2.2.0
 
+# TLS-Fingerprint-Spoofing (Edeka-Adapter)
+curl_cffi
+
 # Dev
 pytest>=7.4.0
