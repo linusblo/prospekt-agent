@@ -7,6 +7,7 @@ MARKET_DISPLAY_NAMES: dict[str, str] = {
     "lidl":      "Lidl",
     "rewe":      "Rewe",
     "edeka":     "Edeka",
+    "combi":     "Combi",
     "penny":     "Penny",
     "netto":     "Netto",
 }

@@ -13,6 +13,7 @@ class Supermarket(str, Enum):
     LIDL      = "lidl"
     REWE      = "rewe"
     EDEKA     = "edeka"
+    COMBI     = "combi"
     PENNY     = "penny"
     NETTO     = "netto"
 

@@ -24,6 +24,7 @@ from src.adapters.aldi_nord import AldiNordAdapter
 from src.adapters.kaufland import KauflandAdapter
 from src.adapters.trinkgut import TrinkgutAdapter
 from src.adapters.edeka import EdekaAdapter
+from src.adapters.combi import CombiAdapter
 from src.adapters.base import SupermarketAdapter
 from src.config.settings import settings
 from src.db.repository import OfferRepository
@@ -39,6 +40,9 @@ ADAPTERS: list[SupermarketAdapter] = [
 # Edeka nur wenn Filial-ID konfiguriert
 if settings.EDEKA_MARKET_ID:
     ADAPTERS.append(EdekaAdapter(settings.EDEKA_MARKET_ID))
+
+if settings.COMBI_STORE_ID:
+    ADAPTERS.append(CombiAdapter(settings.COMBI_STORE_ID))
 
 
 def main() -> None:
