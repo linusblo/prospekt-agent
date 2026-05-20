@@ -1,6 +1,7 @@
 """Prospekt-Agent Streamlit Dashboard — Phase C2."""
 from __future__ import annotations
 
+import html as _html
 import json
 import os
 import sqlite3
@@ -30,7 +31,56 @@ DB_PATH = os.getenv("DB_PATH", "data/offers.db")
 _PACKAGING_OPTIONS = ["Dose", "Glas", "Flasche", "Packung", "Beutel", "Becher"]
 _UNIT_OPTIONS      = ["", "L", "ml", "cl", "kg", "g", "Stk"]
 
-st.set_page_config(page_title="Prospekt-Agent", page_icon="🛒", layout="wide")
+st.set_page_config(page_title="Prospekt-Agent", layout="wide")
+
+# ---------------------------------------------------------------------------
+# Global CSS — Clean & Minimal
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+/* Tabs: kein Emoji-Padding, dezente Schrift */
+.stTabs [data-baseweb="tab-list"] { gap: 4px; }
+.stTabs [data-baseweb="tab"] {
+    font-size: 14px; font-weight: 500; color: #6b7280;
+    padding: 6px 14px; border-radius: 6px 6px 0 0;
+}
+.stTabs [aria-selected="true"] { color: #111827; }
+
+/* Buttons dezenter */
+.stButton > button {
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    color: #374151;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 4px 14px;
+}
+.stButton > button:hover { background: #f9fafb; box-shadow: none; }
+
+/* Divider dünner */
+hr { border-top: 1px solid #f3f4f6 !important; margin: 12px 0 !important; }
+
+/* Metriken kompakter */
+[data-testid="metric-container"] [data-testid="stMetricValue"] {
+    font-size: 22px !important;
+}
+
+/* Block-Container mehr Luft */
+.block-container { padding-top: 1.5rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Deutsches Datum
+# ---------------------------------------------------------------------------
+_DE_WD  = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
+_DE_MON = ["Januar","Februar","März","April","Mai","Juni",
+           "Juli","August","September","Oktober","November","Dezember"]
+
+def _german_now() -> str:
+    dt = datetime.now()
+    return f"{_DE_WD[dt.weekday()]}, {dt.day}. {_DE_MON[dt.month-1]} {dt.year}"
 
 # ---------------------------------------------------------------------------
 # Cached Daten-Loader (TTL 60 s)
@@ -175,6 +225,155 @@ _PRICE_COLS = {
 
 _COL_WIDTHS = [1, 3, 2, 1.1, 1, 1.5, 1.2, 1.8]
 
+_RATING_COLORS = {
+    "green":   "#22c55e",
+    "yellow":  "#f59e0b",
+    "red":     "#ef4444",
+    "no_data": "#9ca3af",
+}
+
+
+def _savings_summary(matched: dict[str, list[dict]]) -> tuple[float, int, int, str]:
+    """Berechnet Gesamt-Ersparnisse aus allen aktuellen Matches."""
+    total   = 0.0
+    best_s  = 0.0
+    best_t  = ""
+    n_prod  = 0
+    markets: set[str] = set()
+    for products in matched.values():
+        for prod in products:
+            o = prod["primary"]
+            n_prod += 1
+            markets.add(o.get("source") or "")
+            orig = o.get("original_price")
+            sale = o.get("sale_price") or 0.0
+            if orig and orig > sale:
+                s = orig - sale
+                total += s
+                if s > best_s:
+                    best_s = s
+                    disc   = o.get("discount_percent") or 0
+                    mkt    = get_display_name(o.get("source") or "")
+                    best_t = (
+                        f"{o.get('name','')} — {sale:.2f} € statt {orig:.2f} €"
+                        f" (−{disc:.0f}%) bei {mkt}"
+                    )
+    return total, n_prod, len(markets), best_t
+
+
+def _card_html(
+    o: dict,
+    alts: list[dict],
+    p_count: int,
+    rating: dict | None,
+    variant_names: list[str],
+    upcoming: bool = False,
+) -> str:
+    """Rendert eine Produktkarte als HTML-String."""
+    name      = _html.escape(o.get("name") or "")
+    brand     = _html.escape(o.get("brand") or "")
+    price     = o.get("sale_price") or 0.0
+    orig      = o.get("original_price")
+    disc      = o.get("discount_percent")
+    img_url   = o.get("image_url") or ""
+    market    = _html.escape(get_display_name(o.get("source") or ""))
+    n_var     = len(variant_names)
+    card_p    = o.get("card_price")
+
+    date_str  = _html.escape(
+        _starts_in_text(o.get("valid_from")) if upcoming
+        else format_german_date(o.get("valid_until"))
+    )
+
+    unit_raw  = o.get("sales_unit_raw") or ""
+    bp_str    = _fmt_base_price(o)
+    content   = _html.escape(unit_raw + (f" · {bp_str}" if bp_str else ""))
+
+    # Bild oder Platzhalter
+    img_el = (
+        f'<img src="{img_url}" '
+        f'style="width:58px;height:58px;object-fit:contain;border-radius:8px;background:#f9fafb;flex-shrink:0">'
+        if img_url else
+        '<div style="width:58px;height:58px;border-radius:8px;background:#f3f4f6;flex-shrink:0"></div>'
+    )
+
+    # Name-Block
+    if n_var > 1:
+        preview = " · ".join(_html.escape(v) for v in variant_names[:3])
+        if n_var > 3:
+            preview += f" (+{n_var-3})"
+        name_block = (
+            f'<div style="font-size:15px;font-weight:600;color:#111">{n_var} Sorten</div>'
+            f'<div style="font-size:11px;color:#9ca3af;margin-top:2px">{preview}</div>'
+        )
+    else:
+        name_block = f'<div style="font-size:15px;font-weight:600;color:#111;line-height:1.3">{name}</div>'
+    brand_el = f'<div style="font-size:12px;color:#9ca3af;margin-top:2px">{brand}</div>' if brand else ""
+
+    # Preis-Block
+    disc_badge = (
+        f'<span style="background:#dcfce7;color:#16a34a;font-size:10px;'
+        f'font-weight:600;padding:1px 5px;border-radius:4px;margin-left:4px">−{disc:.0f}%</span>'
+        if disc else ""
+    )
+    old_el = (
+        f'<div style="font-size:11px;color:#9ca3af;text-decoration:line-through;'
+        f'margin-top:1px">{orig:.2f} €</div>'
+        if orig else ""
+    )
+
+    # Rating-Badge
+    r_el = ""
+    if rating:
+        lvl   = rating.get("level", "no_data")
+        label = _html.escape(rating.get("label", "–").replace("Tendenz: ", ""))
+        col   = _RATING_COLORS.get(lvl, "#9ca3af")
+        r_el  = f'<div style="font-size:11px;color:{col};font-weight:500;margin-top:2px">{label}</div>'
+
+    # Märkte-Badge
+    alts_el = ""
+    if alts:
+        alts_el = (
+            f'<span style="background:#eff6ff;color:#2563eb;font-size:10px;'
+            f'padding:1px 6px;border-radius:4px">+{len(alts)}</span>'
+        )
+    dup_el = (
+        f'<span style="font-size:10px;color:#9ca3af">×{p_count}</span>'
+        if p_count > 1 else ""
+    )
+
+    card_el = (
+        f'<span style="font-size:10px;color:#7c3aed">🃏 {card_p:.2f} €*</span>'
+        if card_p else ""
+    )
+
+    return f"""<div style="background:white;border:1px solid #f0f0f0;border-radius:12px;
+padding:14px 16px;margin:6px 0;display:flex;gap:14px;align-items:flex-start">
+  {img_el}
+  <div style="flex:1;min-width:0">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+      <div style="flex:1;min-width:0">{name_block}{brand_el}</div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="display:flex;align-items:baseline;gap:4px;justify-content:flex-end">
+          <span style="font-size:18px;font-weight:700;color:#111">{price:.2f} €</span>{disc_badge}
+        </div>
+        {old_el}{r_el}
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;
+    margin-top:10px;flex-wrap:wrap;gap:4px">
+      <div style="font-size:12px;color:#6b7280">{content or "–"}</div>
+      <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+        {card_el}
+        <span style="background:#f3f4f6;color:#555;font-size:11px;
+        padding:2px 8px;border-radius:4px">{market}</span>
+        {alts_el}{dup_el}
+        <span style="color:#d1d5db;font-size:11px">{date_str}</span>
+      </div>
+    </div>
+  </div>
+</div>"""
+
 
 def _parse_iso_to_dt(s: str | None) -> datetime | None:
     if not s:
@@ -202,15 +401,16 @@ def _starts_in_text(vf_str: str | None) -> str:
 
 
 def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = False) -> None:
-    """Rendert eine Wishlist-Gruppe (Header + Zeilen + Expander)."""
-    date_label = "Startet in" if upcoming else "Gültig bis"
+    """Rendert eine Wishlist-Gruppe als Card-Layout."""
     n = len(products)
-
-    st.markdown(f"**{item_name}** — {n} Treffer")
-
-    h = st.columns(_COL_WIDTHS)
-    for col, lbl in zip(h, ["Bild", "Produkt", "Preis", "🚦", "Rabatt", "Inhalt/Basis", date_label, "Märkte"]):
-        col.markdown(f"**{lbl}**")
+    st.markdown(
+        f'<div style="font-size:14px;font-weight:600;color:#374151;'
+        f'margin:18px 0 6px 0;border-bottom:1px solid #f3f4f6;padding-bottom:6px">'
+        f'{_html.escape(item_name)}'
+        f'<span style="font-size:12px;font-weight:400;color:#9ca3af;margin-left:8px">'
+        f'{n} Treffer</span></div>',
+        unsafe_allow_html=True,
+    )
 
     for prod in products:
         o             = prod["primary"]
@@ -218,71 +418,18 @@ def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = F
         p_count       = prod["primary_count"]
         rating        = prod.get("rating")
         variant_names = prod.get("variant_names") or []
-        n_variants    = len(variant_names)
 
-        if rating:
-            r_emoji = RATING_EMOJI.get(rating["level"], "⚪")
-            r_label = rating["label"].replace("Tendenz: ", "")
-            r_expl  = rating["explanation"]
-            n_pts   = rating.get("historic_count", 0)
-            r_help  = f"{r_expl}  ({n_pts} Datenpunkte)"
-        else:
-            r_emoji, r_label, r_help = "⚪", "Zu wenig Daten", "Noch kein historischer Preis."
-
-        market_label = get_display_name(o.get("source") or "")
-        if alts:
-            market_label += f" **+{len(alts)}**"
-        if p_count > 1:
-            market_label += f" *(×{p_count})*"
-
-        price    = o.get("sale_price") or 0.0
-        orig     = o.get("original_price")
-        disc     = o.get("discount_percent")
-        price_md = f"**{price:.2f} €**"
-        if orig:
-            price_md += f"  \n~~{orig:.2f} €~~"
-        card_p = o.get("card_price")
-        if card_p:
-            price_md += f"  \n🃏 {card_p:.2f} €*"
-
-        unit_raw = o.get("sales_unit_raw") or ""
-        bp_str   = _fmt_base_price(o)
-        content  = unit_raw + (f"  \n{bp_str}" if bp_str else "")
-
-        # Datumsspalte: "Startet in" oder "Gültig bis"
-        if upcoming:
-            date_val = _starts_in_text(o.get("valid_from"))
-        else:
-            date_val = format_german_date(o.get("valid_until"))
-
-        cols = st.columns(_COL_WIDTHS)
-        img_url = o.get("image_url")
-        if img_url:
-            cols[0].image(img_url, width=55)
-        else:
-            cols[0].write("")
-        if n_variants > 1:
-            prod_md = f"**{n_variants} Sorten verfügbar**"
-        else:
-            prod_md = f"**{o.get('name', '')}**"
-        if o.get("brand"):
-            prod_md += f"  \n{o['brand']}"
-        if n_variants > 1:
-            prod_md += f"  \n*{' · '.join(variant_names)}*"
-        cols[1].markdown(prod_md)
-        cols[2].markdown(price_md)
-        cols[3].metric(label=r_label, value=r_emoji, help=r_help)
-        cols[4].write(f"-{disc:.0f}%" if disc else "–")
-        cols[5].markdown(content or "–")
-        cols[6].write(date_val)
-        cols[7].markdown(market_label)
+        st.markdown(
+            _card_html(o, alts, p_count, rating, variant_names, upcoming=upcoming),
+            unsafe_allow_html=True,
+        )
 
         if alts:
-            with st.expander(f"Auch verfügbar bei {len(alts)} weiteren Märkten"):
+            with st.expander(f"Verfügbar bei {len(alts)} weiteren Märkten"):
                 alt_rows = []
                 for alt in alts:
-                    alt_bp   = _fmt_base_price(alt)
-                    alt_card = alt.get("card_price")
+                    alt_bp    = _fmt_base_price(alt)
+                    alt_card  = alt.get("card_price")
                     preis_str = f"{alt.get('sale_price', 0):.2f} €"
                     if alt_card:
                         preis_str += f" (🃏 {alt_card:.2f} €*)"
@@ -293,8 +440,6 @@ def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = F
                         "Gültig bis": format_german_date(alt.get("valid_until")),
                     })
                 st.dataframe(pd.DataFrame(alt_rows), hide_index=True, use_container_width=True)
-
-    st.divider()
 
 
 # ---------------------------------------------------------------------------
@@ -494,8 +639,11 @@ def _wishlist_form(edit_id: int | None = None) -> None:
 # Seitenheader
 # ---------------------------------------------------------------------------
 
-st.title("🛒 Prospekt-Agent")
-st.caption(datetime.now().strftime("Stand: %A, %d. %B %Y"))
+st.markdown(
+    '<h1 style="font-size:28px;font-weight:700;color:#111;margin-bottom:2px">Prospekt-Agent</h1>',
+    unsafe_allow_html=True,
+)
+st.caption(f"Stand: {_german_now()}")
 
 if not Path(DB_PATH).exists():
     st.error(
@@ -509,17 +657,22 @@ if not Path(DB_PATH).exists():
 # ---------------------------------------------------------------------------
 
 tab_hits, tab_wish, tab_all, tab_hist, tab_status = st.tabs(
-    ["🎯 Treffer", "📋 Wishlist", "🛒 Alle Angebote", "📈 Preis-Historie", "ℹ️ Status"]
+    ["Treffer", "Wishlist", "Alle Angebote", "Preis-Historie", "Status"]
 )
 
 # ── Tab 1: Treffer ──────────────────────────────────────────────────────────
 with tab_hits:
-    col_title, col_btn = st.columns([5, 1])
-    col_title.subheader("Aktuelle Wishlist-Treffer")
+    col_title, col_btn = st.columns([6, 1])
+    with col_title:
+        st.markdown(
+            '<div style="font-size:22px;font-weight:700;color:#111;margin-bottom:4px">'
+            'Deine Treffer</div>',
+            unsafe_allow_html=True,
+        )
 
-    # ── Teil 3: Aktualisieren-Button ──
+    # ── Aktualisieren-Button (Ghost-Stil) ──
     with col_btn:
-        if st.button("🔄 Aktualisieren", use_container_width=True):
+        if st.button("↻ Aktualisieren", use_container_width=True):
             from src.adapters.aldi_nord import AldiNordAdapter
             from src.adapters.kaufland import KauflandAdapter
             from src.adapters.trinkgut import TrinkgutAdapter
@@ -598,28 +751,69 @@ with tab_hits:
 
         n_current  = sum(len(v) for v in current_by_item.values())
         n_upcoming = len(upcoming_list)
+
+        # ── Spar-Übersicht Card ────────────────────────────────────────
+        total_s, n_prod, n_mkts, best_deal = _savings_summary(current_by_item)
+        if total_s > 0:
+            best_html = (
+                f'<div style="font-size:12px;color:#15803d;margin-top:12px;'
+                f'padding-top:12px;border-top:1px solid #bbf7d0">'
+                f'<span style="font-weight:600">Bester Deal: </span>'
+                f'{_html.escape(best_deal)}</div>'
+            ) if best_deal else ""
+            st.markdown(f"""
+<div style="background:linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%);
+border:1px solid #bbf7d0;border-radius:14px;padding:22px 26px;margin-bottom:20px">
+  <div style="font-size:12px;color:#16a34a;font-weight:600;
+  text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">
+    Diese Woche sparst du bis zu
+  </div>
+  <div style="font-size:38px;font-weight:800;color:#111;line-height:1">
+    {total_s:.2f} €
+  </div>
+  <div style="font-size:13px;color:#4b5563;margin-top:6px">
+    bei {n_prod} Angeboten über {n_mkts} Märkten
+  </div>
+  {best_html}
+</div>""", unsafe_allow_html=True)
+
         st.caption(f"{n_current} aktuelle · {n_upcoming} kommende Treffer")
 
         # ── Abschnitt 1: Aktuelle Angebote ──
-        st.markdown("### 🛒 Aktuelle Angebote")
+        st.markdown(
+            '<div style="font-size:16px;font-weight:700;color:#111;margin:20px 0 4px 0">'
+            'Aktuelle Angebote</div>',
+            unsafe_allow_html=True,
+        )
         if current_by_item:
             for item_name, products in current_by_item.items():
                 _render_offer_group(item_name, products, upcoming=False)
         else:
-            st.info("Keine aktuellen Treffer — aber schau auch kommende Angebote unten.")
+            st.info("Keine aktuellen Treffer — schau auch in kommende Angebote unten.")
 
         # ── Abschnitt 2: Kommende Angebote ──
         if upcoming_by_item:
-            st.markdown("### 🔮 Kommende Angebote (ab nächster Woche)")
+            st.markdown(
+                '<div style="font-size:16px;font-weight:700;color:#111;margin:28px 0 2px 0">'
+                'Kommende Angebote</div>'
+                '<div style="font-size:12px;color:#9ca3af;margin-bottom:4px">'
+                'gültig ab nächster Woche</div>',
+                unsafe_allow_html=True,
+            )
             for item_name, products in upcoming_by_item.items():
                 _render_offer_group(item_name, products, upcoming=True)
 
 # ── Tab 2: Wishlist ─────────────────────────────────────────────────────────
 with tab_wish:
-    st.subheader("Meine Wunschliste")
-
-    if st.button("➕ Neuer Eintrag", type="primary"):
-        _wishlist_form(edit_id=None)
+    col_wh, col_wb = st.columns([5, 1])
+    col_wh.markdown(
+        '<div style="font-size:22px;font-weight:700;color:#111;margin-bottom:4px">'
+        'Meine Wunschliste</div>',
+        unsafe_allow_html=True,
+    )
+    with col_wb:
+        if st.button("+ Neu", use_container_width=True):
+            _wishlist_form(edit_id=None)
 
     rows = _wishlist_rows()
 
@@ -632,7 +826,7 @@ with tab_wish:
         # Tabellen-Header
         hdr = st.columns([1, 2, 3, 3, 1.2, 1.2, 0.8, 0.8])
         for col, label in zip(hdr, ["Aktiv", "Name", "Marken", "Keywords", "Max €", "Einheit", "", ""]):
-            col.markdown(f"**{label}**")
+            col.markdown(f'<span style="font-size:12px;color:#6b7280;font-weight:600">{label}</span>', unsafe_allow_html=True)
         st.divider()
 
         repo = OfferRepository(DB_PATH)
@@ -640,32 +834,41 @@ with tab_wish:
         for row in rows:
             item_id   = row["id"]
             item_name = row["name"]
+            is_active = bool(row["active"])
 
             def _on_toggle(iid: int = item_id) -> None:
                 OfferRepository(DB_PATH).toggle_wishlist_item_active(iid)
                 st.cache_data.clear()
 
+            row_alpha = "1.0" if is_active else "0.45"
+            st.markdown(
+                f'<div style="opacity:{row_alpha}">',
+                unsafe_allow_html=True,
+            )
             cols = st.columns([1, 2, 3, 3, 1.2, 1.2, 0.8, 0.8])
             with cols[0]:
-                st.checkbox(
-                    "",
-                    key=f"active_{item_id}",
-                    value=bool(row["active"]),
-                    on_change=_on_toggle,
-                )
-            cols[1].write(item_name)
+                st.checkbox("", key=f"active_{item_id}", value=is_active, on_change=_on_toggle)
+
+            cols[1].markdown(
+                f'<span style="font-size:13px;font-weight:600;color:#111">'
+                f'{_html.escape(item_name)}</span>',
+                unsafe_allow_html=True,
+            )
             brands_list = json.loads(row.get("allowed_brands") or "[]")
-            cols[2].write(", ".join(brands_list) or "–")
+            b_text = ", ".join(brands_list[:2]) + (f" (+{len(brands_list)-2})" if len(brands_list) > 2 else "")
+            cols[2].write(b_text or "–")
             kw_list = json.loads(row.get("keywords") or "[]")
-            cols[3].write(", ".join(kw_list) or "–")
+            kw_text = ", ".join(kw_list[:3]) + (f" (+{len(kw_list)-3})" if len(kw_list) > 3 else "")
+            cols[3].write(kw_text or "–")
             cols[4].write(f"{row['max_price']:.2f}" if row.get("max_price") else "–")
             cols[5].write(row.get("unit_filter") or "–")
             with cols[6]:
-                if st.button("✏️", key=f"edit_{item_id}", help="Bearbeiten"):
+                if st.button("Bearbeiten", key=f"edit_{item_id}"):
                     _wishlist_form(edit_id=item_id)
             with cols[7]:
-                if st.button("🗑️", key=f"del_{item_id}", help="Löschen"):
+                if st.button("Löschen", key=f"del_{item_id}"):
                     _confirm_delete(item_id, item_name)
+            st.markdown("</div>", unsafe_allow_html=True)
 
 # ── Tab 3: Alle Angebote ────────────────────────────────────────────────────
 with tab_all:
@@ -858,7 +1061,10 @@ with tab_hist:
 
 # ── Tab 5: Status ────────────────────────────────────────────────────────────
 with tab_status:
-    st.subheader("System-Status")
+    st.markdown(
+        '<div style="font-size:22px;font-weight:700;color:#111;margin-bottom:12px">Status</div>',
+        unsafe_allow_html=True,
+    )
 
     all_o  = _all_offers()
     act_o  = _active_offers()
@@ -875,7 +1081,7 @@ with tab_status:
         except ValueError:
             last_scrape_abs = last_raw[:16]
 
-    active_wish = sum(1 for i in wish_r if i.get("active"))
+    active_wish = sum(1 for i in wish_r if bool(i.get("active")))
 
     alert_wish = sum(1 for i in wish_r if i.get("alert_enabled"))
 
@@ -903,5 +1109,5 @@ with tab_status:
             "Bitte `SMTP_EMAIL` und `SMTP_PASSWORD` in `.env` setzen."
         )
 
-    st.divider()
-    st.code(f"DB-Pfad: {Path(DB_PATH).absolute()}")
+    with st.expander("Technische Details"):
+        st.code(f"DB-Pfad: {Path(DB_PATH).absolute()}")
