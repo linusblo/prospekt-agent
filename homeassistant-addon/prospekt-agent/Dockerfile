@@ -2,43 +2,31 @@ ARG BUILD_FROM=python:3.12-slim
 FROM ${BUILD_FROM}
 
 # ── Systemabhängigkeiten ─────────────────────────────────────────────────────
-# gcc:        C-Extensions in rapidfuzz und curl_cffi
+# gcc:        C-Extensions (rapidfuzz, curl_cffi)
+# git:        Anwendungscode aus dem öffentlichen Repo klonen
 # supervisor: Prozessmanagement (Streamlit + Scheduler)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        gcc \
+       git \
        supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # ── Anwendungscode ───────────────────────────────────────────────────────────
-# Der Build-Kontext ist das Add-on-Verzeichnis (homeassistant-addon/prospekt-agent/).
-# Die folgenden Symlinks liegen dort und zeigen auf den Repo-Root:
-#   src -> ../../src
-#   dashboard -> ../../dashboard
-#   scripts -> ../../scripts
-#   requirements.txt -> ../../requirements.txt
-#   wishlist.yaml -> ../../wishlist.yaml
-#
-# Docker folgt Symlinks beim Erstellen des Build-Context-Tars — die Zieldateien
-# werden eingebettet, nicht die Symlinks selbst. Derselbe git-Commit ergibt
-# immer denselben Container-Inhalt (deterministisch).
-#
-# FALLBACK (falls HA Supervisor Symlinks beim Build nicht folgt):
-#   git in Systemabhängigkeiten ergänzen und stattdessen:
-#   RUN git clone --depth 1 --branch main \
-#           https://github.com/linusblo/prospekt-agent.git /tmp/repo \
-#       && cp -r /tmp/repo/src /tmp/repo/dashboard /tmp/repo/scripts . \
-#       && cp /tmp/repo/requirements.txt /tmp/repo/wishlist.yaml . \
-#       && rm -rf /tmp/repo
-#   Der Build-Fehler "COPY failed: file not found" ist das Erkennungszeichen
-#   dafür, dass der Fallback aktiviert werden muss.
-COPY src/             ./src/
-COPY dashboard/       ./dashboard/
-COPY scripts/         ./scripts/
-COPY requirements.txt .
-COPY wishlist.yaml    .
+# GIT_TAG wird von build.yaml übergeben (default: "main").
+# Für deterministische Releases: Tag setzen, build.yaml aktualisieren.
+#   --depth 1: Shallow Clone, lädt nur den Stand des angegebenen Tags/Branches.
+ARG GIT_TAG=main
+RUN git clone --depth 1 --branch ${GIT_TAG} \
+        https://github.com/linusblo/prospekt-agent.git /tmp/repo \
+    && cp -r /tmp/repo/src         ./src         \
+    && cp -r /tmp/repo/dashboard   ./dashboard   \
+    && cp -r /tmp/repo/scripts     ./scripts     \
+    && cp    /tmp/repo/requirements.txt . \
+    && cp    /tmp/repo/wishlist.yaml    . \
+    && rm -rf /tmp/repo
 
 # ── Python-Abhängigkeiten ────────────────────────────────────────────────────
 RUN pip install --no-cache-dir -r requirements.txt

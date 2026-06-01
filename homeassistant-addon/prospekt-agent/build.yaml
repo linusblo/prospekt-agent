@@ -1,0 +1,8 @@
+build_from:
+  amd64: python:3.12-slim
+
+args:
+  # Git-Tag oder Branch, der beim docker build geklont wird.
+  # Für Entwicklungstests: "main"
+  # Für Releases: auf den jeweiligen Tag setzen, z.B. "v1.1.0"
+  GIT_TAG: "main"

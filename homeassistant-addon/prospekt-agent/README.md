@@ -78,16 +78,40 @@ gleichzeitig keine Daten liefern.
 
 ---
 
-## Update
+## Release-Workflow
 
-Ein Add-on-Update zieht den aktuellen `main`-Branch neu und baut den Container.
-Die Datenbank und Wishlist in `/data/` bleiben dabei unverändert.
+Bei jeder neuen Version folgt dieser Ablauf:
+
+```bash
+# 1. Tag setzen (auf dem aktuellen Commit)
+git tag v1.1.0
+git push origin v1.1.0
+
+# 2. Add-on-Dateien anpassen
+#    - homeassistant-addon/prospekt-agent/build.yaml:
+#        args.GIT_TAG: "v1.1.0"
+#    - homeassistant-addon/prospekt-agent/config.yaml:
+#        version: "1.1.0"
+
+# 3. Commit + Push
+git add homeassistant-addon/
+git commit -m "chore: bump add-on to v1.1.0"
+git push
+```
+
+HA Supervisor erkennt die neue `version` in `config.yaml` und bietet
+im Dashboard ein Update an. Der Build zieht dann exakt den Stand von
+`v1.1.0` — deterministisch, kein `main`-Drift.
+
+**Für Entwicklungstests** bleibt `GIT_TAG: "main"` in `build.yaml`.
+Das reicht für lokale `docker build`-Tests.
 
 ---
 
 ## Technische Details
 
 - **Python:** 3.12
+- **Build-Strategie:** `git clone --depth 1 --branch ${GIT_TAG}` im Dockerfile
 - **Prozessmanagement:** supervisord (Streamlit + Scheduler als separate Prozesse)
 - **Scraper-Schedule:** täglich zur konfigurierten Uhrzeit via `schedule`-Library
 - **HTTP-Fingerprinting:** `curl_cffi` mit Chrome-Impersonation für Edeka
