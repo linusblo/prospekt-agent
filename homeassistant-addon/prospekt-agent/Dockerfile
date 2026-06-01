@@ -1,5 +1,4 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.12
-FROM ${BUILD_FROM}
+FROM ghcr.io/home-assistant/base-python:3.12-alpine3.23
 
 RUN apk add --no-cache build-base git supervisor
 
