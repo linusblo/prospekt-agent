@@ -1495,64 +1495,69 @@ with tab_all:
     _display_cols = ["Liste", "Wishlist", "Markt", "_markt_url", "Produkt", "Marke",
                      "Preis", "UVP", "Rabatt", "Inhalt", "Basispreis", "Gültig bis"]
 
-    _all_event = st.dataframe(
-        df_all[_display_cols],
-        column_config={
-            "Liste":      st.column_config.TextColumn("Liste",    width="small"),
-            "Wishlist":   st.column_config.TextColumn("Wishlist", width="small"),
-            "_markt_url": st.column_config.LinkColumn("↗", width="small",
-                          display_text="↗"),
-            **_PRICE_COLS,
-        },
-        on_select="rerun",
-        selection_mode="single-row",
-        hide_index=True,
-        use_container_width=True,
-        key="all_offers_df",
-    )
-
-    # ── Action-Area: erscheint wenn Zeile ausgewählt ───────────────────────
-    _sel_rows = _all_event.selection.rows
-    if _sel_rows:
-        _idx     = _sel_rows[0]
-        _row     = df_all.iloc[_idx]
-        _key_str = str(_row.get("_key", ""))
-        _parts   = _key_str.split("|", 1)
-        _src     = _parts[0]
-        _slg     = _parts[1] if len(_parts) > 1 else ""
-        _sel_offer = next(
-            (_oo for _oo in all_offers
-             if _oo.get("source") == _src and _oo.get("product_slug") == _slg),
-            None,
+    if df_all.empty:
+        st.info(
+            "Noch keine Angebote in der Datenbank.  \n"
+            "Der Scraper läuft täglich zur konfigurierten Uhrzeit, "
+            "oder starte ihn manuell über den **↻ Aktualisieren**-Button im Treffer-Tab."
         )
-
-        st.caption(
-            f"Ausgewählt: **{_row['Produkt']}** "
-            f"({_row['Marke']}) bei {_row['Markt']}"
-        )
-        _ac1, _ac2, _ = st.columns([1.5, 1.5, 5])
-
-        # Einkaufsliste
-        with _ac1:
-            if _row["Liste"] == "✓":
-                st.button("✓ Auf Liste", key="ao_sl_on",
-                          disabled=True, use_container_width=True)
-            elif _sel_offer and st.button("+ Zur Liste", key="ao_sl_add",
-                                          use_container_width=True):
-                _sl_add(_sel_offer)
-                st.rerun()
-
-        # Wishlist (Stufe 2: Dialog)
-        with _ac2:
-            if _row["Wishlist"] == "✓":
-                st.button("✓ In Wishlist", key="ao_wl_on",
-                          disabled=True, use_container_width=True,
-                          help="Diese Marke wird bereits verfolgt.")
-            elif _sel_offer and st.button("+ Zur Wishlist", key="ao_wl_add",
-                                          use_container_width=True):
-                _wishlist_add_dialog(_sel_offer)
     else:
-        st.caption("Zeile auswählen für Aktionen.")
+        _all_event = st.dataframe(
+            df_all[_display_cols],
+            column_config={
+                "Liste":      st.column_config.TextColumn("Liste",    width="small"),
+                "Wishlist":   st.column_config.TextColumn("Wishlist", width="small"),
+                "_markt_url": st.column_config.LinkColumn("↗", width="small",
+                              display_text="↗"),
+                **_PRICE_COLS,
+            },
+            on_select="rerun",
+            selection_mode="single-row",
+            hide_index=True,
+            use_container_width=True,
+            key="all_offers_df",
+        )
+
+        # ── Action-Area: erscheint wenn Zeile ausgewählt ─────────────────────
+        _sel_rows = _all_event.selection.rows
+        if _sel_rows:
+            _idx     = _sel_rows[0]
+            _row     = df_all.iloc[_idx]
+            _key_str = str(_row.get("_key", ""))
+            _parts   = _key_str.split("|", 1)
+            _src     = _parts[0]
+            _slg     = _parts[1] if len(_parts) > 1 else ""
+            _sel_offer = next(
+                (_oo for _oo in all_offers
+                 if _oo.get("source") == _src and _oo.get("product_slug") == _slg),
+                None,
+            )
+
+            st.caption(
+                f"Ausgewählt: **{_row['Produkt']}** "
+                f"({_row['Marke']}) bei {_row['Markt']}"
+            )
+            _ac1, _ac2, _ = st.columns([1.5, 1.5, 5])
+
+            with _ac1:
+                if _row["Liste"] == "✓":
+                    st.button("✓ Auf Liste", key="ao_sl_on",
+                              disabled=True, use_container_width=True)
+                elif _sel_offer and st.button("+ Zur Liste", key="ao_sl_add",
+                                              use_container_width=True):
+                    _sl_add(_sel_offer)
+                    st.rerun()
+
+            with _ac2:
+                if _row["Wishlist"] == "✓":
+                    st.button("✓ In Wishlist", key="ao_wl_on",
+                              disabled=True, use_container_width=True,
+                              help="Diese Marke wird bereits verfolgt.")
+                elif _sel_offer and st.button("+ Zur Wishlist", key="ao_wl_add",
+                                              use_container_width=True):
+                    _wishlist_add_dialog(_sel_offer)
+        else:
+            st.caption("Zeile auswählen für Aktionen.")
 
 # ── Tab 4: Preis-Historie ────────────────────────────────────────────────────
 with tab_hist:
