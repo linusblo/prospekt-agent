@@ -1,16 +1,7 @@
-ARG BUILD_FROM=python:3.12-slim
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.12
 FROM ${BUILD_FROM}
 
-# ── Systemabhängigkeiten ─────────────────────────────────────────────────────
-# gcc:        C-Extensions (rapidfuzz, curl_cffi)
-# git:        Anwendungscode aus dem öffentlichen Repo klonen
-# supervisor: Prozessmanagement (Streamlit + Scheduler)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       gcc \
-       git \
-       supervisor \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache build-base git supervisor
 
 WORKDIR /app
 
