@@ -102,10 +102,17 @@ class Matcher:
         wishlist: Wishlist,
         food_only: bool = True,
         repository: OfferRepository | None = None,
+        excluded: dict[str, set[tuple[str, str, str]]] | None = None,
     ) -> None:
+        """
+        excluded: {wishlist_item_name → {(source, brand_norm, name_norm), ...}}
+                  Nur die Excludes des jeweiligen Items werden auf seine Treffer
+                  angewendet — kein ungewollter Überlauf zwischen Items.
+        """
         self._wishlist    = wishlist
         self._food_only   = food_only
         self._repo        = repository
+        self._excluded    = excluded or {}
 
     def match_all(self, offers: list[dict]) -> dict[str, list[MatchedProduct]]:
         """Gibt für jedes aktive WishlistItem die MatchedProducts zurück."""
@@ -127,6 +134,13 @@ class Matcher:
             passed, matched_on = self._passes_filters(item, offer)
             if passed:
                 raw.append(_MatchResult(wishlist_item=item, offer=offer, matched_on=matched_on))
+
+        # Produkt-spezifische Ausschlüsse für dieses Wishlist-Item anwenden.
+        # Nur self._excluded.get(item.name) — kein globaler Überlauf auf andere Items.
+        excl_for_item = self._excluded.get(item.name, set())
+        if excl_for_item:
+            raw = [r for r in raw if _make_excl_key(r.offer) not in excl_for_item]
+
         products = _group_cross_market(raw)
         if self._repo is not None:
             for mp in products:
@@ -408,6 +422,18 @@ def _matches_words(terms: set[str], text: str) -> bool:
         if re.search(r"\b" + re.escape(normalized) + r"\b", text):
             return True
     return False
+
+
+def _make_excl_key(offer: dict) -> tuple[str, str, str]:
+    """
+    Baut den Ausschluss-Schlüssel (source, brand_norm, name_norm) für ein Angebot.
+    Dieselbe Normalisierung wie der Matcher → konsistentes Matching.
+    """
+    return (
+        offer.get("source") or "",
+        normalize_for_matching(offer.get("brand") or "")[:32],
+        normalize_for_matching(offer.get("name")  or "")[:40],
+    )
 
 
 def _get_sales_unit(offer: dict) -> dict | None:

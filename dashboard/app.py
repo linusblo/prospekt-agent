@@ -1,9 +1,11 @@
 """Prospekt-Agent Streamlit Dashboard — Phase C2."""
 from __future__ import annotations
 
+import hashlib
 import html as _html
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -16,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.analysis.price_rating import RATING_EMOJI
 from src.config.markets import get_display_name
+from src.utils.text_normalize import normalize_for_matching as _nm
+from src.utils.source_urls import get_overview_url
 from src.config.settings import settings
 from src.db.repository import OfferRepository
 from src.matching.matcher import Matcher
@@ -122,7 +126,10 @@ def _load_matched_products() -> dict[str, list[dict]]:
     if not wishlist.active_items:
         return {}
     offers = repo.get_active_offers()
-    results_by_item = Matcher(wishlist, food_only=True, repository=repo).match_all(offers)
+    excl_map = repo.get_all_excludes_as_matcher_dict()
+    results_by_item = Matcher(
+        wishlist, food_only=True, repository=repo, excluded=excl_map
+    ).match_all(offers)
     out: dict[str, list[dict]] = {}
     for item_name, products in results_by_item.items():
         out[item_name] = [
@@ -225,6 +232,158 @@ _PRICE_COLS = {
 
 _COL_WIDTHS = [1, 3, 2, 1.1, 1, 1.5, 1.2, 1.8]
 
+
+# ---------------------------------------------------------------------------
+# Shopping-List Helpers
+# ---------------------------------------------------------------------------
+
+def _sl_keys() -> set[tuple[str, str]]:
+    """Aktuelles Set aller (source, slug) auf der Einkaufsliste."""
+    return {
+        (i["offer_source"], i["offer_slug"])
+        for i in OfferRepository(DB_PATH).get_shopping_list()
+    }
+
+
+def _sl_add(o: dict) -> None:
+    OfferRepository(DB_PATH).add_to_shopping_list({
+        "offer_source":    o.get("source") or "",
+        "offer_slug":      o.get("product_slug") or "",
+        "product_name":    o.get("name") or "",
+        "brand":           o.get("brand"),
+        "sale_price":      o.get("sale_price"),
+        "original_price":  o.get("original_price"),
+        "base_price_text": _fmt_base_price(o),
+        "sales_unit":      o.get("sales_unit_raw"),
+        "market_name":     get_display_name(o.get("source") or ""),
+    })
+
+
+def _wl_tracked_brands() -> set[str]:
+    """Alle norm. Marken die bereits von irgendeinem Wishlist-Item verfolgt werden."""
+    return {
+        _nm(b)
+        for item in OfferRepository(DB_PATH).get_wishlist_items()
+        for b in item.allowed_brands
+    }
+
+
+def _sl_remove_by_keys(source: str, slug: str) -> None:
+    repo = OfferRepository(DB_PATH)
+    for item in repo.get_shopping_list():
+        if item["offer_source"] == source and item["offer_slug"] == slug:
+            repo.remove_from_shopping_list(item["id"])
+            return
+
+
+def _elem_key(prefix: str, source: str, slug: str,
+              name: str = "", brand: str = "",
+              item_scope: str = "") -> str:
+    """
+    Baut einen stabilen, eindeutigen Streamlit-Widget-Key.
+
+    Problem 1: slug[:32] kann bei Trinkgut/Edeka kollidieren (gleicher URL-Präfix).
+    Problem 2: Dasselbe Angebot kann in ZWEI Wishlist-Gruppen auftauchen wenn zwei
+               Wishlist-Items denselben Offer matchen. Ohne item_scope entstehen dann
+               identische Keys in verschiedenen _render_offer_group-Aufrufen.
+
+    Fallback-Kette: name → brand → md5(source+slug)[:12]
+    item_scope: Wishlist-Item-Name (optional) — macht Keys über Gruppen hinweg eindeutig.
+    """
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", s.lower())[:12]
+
+    disambig = _norm(name) or _norm(brand)
+    if not disambig:
+        disambig = hashlib.md5(f"{source}{slug}".encode()).hexdigest()[:12]
+
+    scope  = _norm(item_scope)[:8] if item_scope else ""
+    suffix = f"_{scope}" if scope else ""
+    return f"{prefix}_{source}_{slug[-24:]}_{disambig}{suffix}"
+
+
+@st.cache_data(ttl=30)
+def _wishlist_keyword_set() -> set[tuple[str, str]]:
+    """
+    {(brand_norm, kw_norm)} für alle aktiven Wishlist-Items.
+    TTL 30s — wird nach add_wishlist_item() explizit geleert.
+
+    # TODO: st.cache_data.clear() im Dialog löscht alle Caches.
+    #       Später nur gezielt _wishlist_keyword_set und die
+    #       Funktionen löschen, die die ✓-Spalten in "Alle Angebote"
+    #       befüllen (_all_offers, _load_matched_products).
+    """
+    items = OfferRepository(DB_PATH).get_wishlist_items()
+    return {
+        (_nm(b), _nm(kw))
+        for item in items
+        for b in item.allowed_brands
+        for kw in [item.name] + list(item.keywords)
+    }
+
+
+def _send_shopping_list_email(items: list[dict]) -> None:
+    """Verschickt die Einkaufsliste per E-Mail an DEFAULT_ALERT_RECIPIENTS."""
+    from src.notifications.email_sender import EmailSender
+
+    by_market: dict[str, list[dict]] = {}
+    for item in items:
+        by_market.setdefault(item["market_name"], []).append(item)
+
+    n_markets = len(by_market)
+    n_items   = len(items)
+    subject   = f"Einkaufsliste — {n_items} Artikel bei {n_markets} Märkten"
+
+    total      = sum(i["sale_price"] or 0 for i in items if not i.get("checked"))
+    total_orig = sum(
+        (i["original_price"] or i["sale_price"] or 0)
+        for i in items if not i.get("checked")
+    )
+    savings = total_orig - total
+
+    market_html = ""
+    for mkt, mkt_items in sorted(by_market.items()):
+        mkt_sum  = sum(i["sale_price"] or 0 for i in mkt_items if not i.get("checked"))
+        rows_html = "".join(
+            f"<tr><td style='padding:5px 0'>{i['product_name']}</td>"
+            f"<td style='padding:5px 0;color:#666;font-size:12px'>{i.get('sales_unit') or ''}</td>"
+            f"<td style='padding:5px 0;text-align:right;font-weight:600'>"
+            f"{'~~' if i.get('checked') else ''}{i['sale_price']:.2f} €</td></tr>"
+            for i in sorted(mkt_items, key=lambda x: x["product_name"])
+        )
+        market_html += f"""
+<div style="margin-bottom:20px">
+  <div style="font-size:15px;font-weight:700;border-bottom:1px solid #eee;
+  padding-bottom:6px;margin-bottom:8px">{mkt}</div>
+  <table style="width:100%;border-collapse:collapse">
+    {rows_html}
+    <tr style="border-top:1px solid #eee">
+      <td colspan="2" style="padding:8px 0;color:#555;font-size:13px">Summe</td>
+      <td style="padding:8px 0;text-align:right;font-weight:700">{mkt_sum:.2f} €</td>
+    </tr>
+  </table>
+</div>"""
+
+    savings_html = (
+        f'<div style="color:#16a34a;font-size:13px;margin-top:6px">'
+        f'Ersparnis: ~{savings:.2f} € gegenüber UVP</div>'
+    ) if savings > 0 else ""
+
+    body = f"""<!DOCTYPE html>
+<html><body style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px">
+  <h2 style="font-size:22px;color:#111">Deine Einkaufsliste</h2>
+  {market_html}
+  <div style="border-top:2px solid #111;margin-top:20px;padding-top:14px">
+    <div style="font-size:18px;font-weight:700">Gesamtsumme: {total:.2f} €</div>
+    {savings_html}
+  </div>
+  <p style="color:#bbb;font-size:12px;margin-top:28px">Generiert vom Prospekt-Agent</p>
+</body></html>"""
+
+    sender     = EmailSender(settings)
+    recipients = settings.DEFAULT_ALERT_RECIPIENTS
+    sender.send_alert(recipients, subject, body)
+
 _RATING_COLORS = {
     "green":   "#22c55e",
     "yellow":  "#f59e0b",
@@ -261,7 +420,7 @@ def _savings_summary(matched: dict[str, list[dict]]) -> tuple[float, int, int, s
     return total, n_prod, len(markets), best_t
 
 
-def _card_html(
+def _card_html_UNUSED(  # kept for reference, replaced by native Streamlit below
     o: dict,
     alts: list[dict],
     p_count: int,
@@ -400,8 +559,13 @@ def _starts_in_text(vf_str: str | None) -> str:
     return f"ab {dt.strftime('%d.%m.')}"
 
 
-def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = False) -> None:
-    """Rendert eine Wishlist-Gruppe als Card-Layout."""
+def _render_offer_group(
+    item_name: str,
+    products: list[dict],
+    upcoming: bool = False,
+    sl_keys_snapshot: set[tuple[str, str]] | None = None,
+) -> None:
+    """Rendert eine Wishlist-Gruppe — native Streamlit, kein unsafe HTML in Cards."""
     n = len(products)
     st.markdown(
         f'<div style="font-size:14px;font-weight:600;color:#374151;'
@@ -418,12 +582,138 @@ def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = F
         p_count       = prod["primary_count"]
         rating        = prod.get("rating")
         variant_names = prod.get("variant_names") or []
+        n_var         = len(variant_names)
 
-        st.markdown(
-            _card_html(o, alts, p_count, rating, variant_names, upcoming=upcoming),
-            unsafe_allow_html=True,
-        )
+        price  = o.get("sale_price") or 0.0
+        orig   = o.get("original_price")
+        disc   = o.get("discount_percent")
+        card_p = o.get("card_price")
+        unit_raw = o.get("sales_unit_raw") or ""
+        bp_str   = _fmt_base_price(o)
+        content  = unit_raw + (f" · {bp_str}" if bp_str else "")
 
+        with st.container(border=True):
+            c_img, c_main, c_right = st.columns([1, 3.5, 1.8])
+
+            # ── Bild ─────────────────────────────────────────────────
+            with c_img:
+                img_url = o.get("image_url")
+                if img_url:
+                    st.image(img_url, width=60)
+
+            # ── Produktinfo ──────────────────────────────────────────
+            with c_main:
+                if n_var > 1:
+                    st.markdown(f"**{n_var} Sorten verfügbar**")
+                    preview = " · ".join(variant_names[:3])
+                    if n_var > 3:
+                        preview += f" (+{n_var-3})"
+                    st.caption(preview)
+                else:
+                    st.markdown(f"**{o.get('name', '')}**")
+                brand = o.get("brand") or ""
+                if brand:
+                    st.caption(brand)
+                if content:
+                    st.caption(content)
+
+            # ── Preis + Meta ─────────────────────────────────────────
+            with c_right:
+                # Preis (durchgestrichener UVP via Streamlit-Markdown)
+                price_md = f"**{price:.2f} €**"
+                if orig:
+                    price_md += f"  ~~{orig:.2f} €~~"
+                st.markdown(price_md)
+
+                # Rabatt-Badge (kleines HTML-Span, sicher weil nur Zahlen)
+                if disc:
+                    st.markdown(
+                        f'<span style="background:#dcfce7;color:#16a34a;'
+                        f'font-size:11px;font-weight:600;padding:1px 6px;'
+                        f'border-radius:4px">−{disc:.0f}%</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                if card_p:
+                    st.caption(f"🃏 {card_p:.2f} €*")
+
+                # Ampel als farbiger Text
+                if rating:
+                    lvl   = rating.get("level", "no_data")
+                    label = rating.get("label", "–").replace("Tendenz: ", "")
+                    color = _RATING_COLORS.get(lvl, "#9ca3af")
+                    st.markdown(
+                        f'<span style="color:{color};font-size:12px;font-weight:500">'
+                        f'{_html.escape(label)}</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                # Markt + Duplikat-Info + Übersichts-Link
+                _src_str    = o.get("source") or ""
+                market_txt  = get_display_name(_src_str)
+                market_sfx  = ""
+                if alts:
+                    market_sfx += f" +{len(alts)}"
+                if p_count > 1:
+                    market_sfx += f" ×{p_count}"
+                _ov_url = get_overview_url(_src_str)
+                if _ov_url:
+                    st.caption(f"[{market_txt} ↗]({_ov_url}){market_sfx}")
+                else:
+                    st.caption(f"{market_txt}{market_sfx}")
+
+                # Datum / "Startet in"
+                if upcoming:
+                    st.caption(f"Startet: {_starts_in_text(o.get('valid_from'))}")
+                else:
+                    st.caption(format_german_date(o.get("valid_until")))
+
+                # ── Shopping-List-Button ──────────────────────────────
+                src  = o.get("source") or ""
+                slug = o.get("product_slug") or ""
+                on_sl = sl_keys_snapshot is not None and (src, slug) in sl_keys_snapshot
+                btn_key = _elem_key("sl", src, slug,
+                                    name=o.get("name") or "",
+                                    brand=o.get("brand") or "",
+                                    item_scope=item_name)
+                if on_sl:
+                    if st.button("✓ Auf Liste", key=btn_key,
+                                 use_container_width=True,
+                                 help="Aus Einkaufsliste entfernen"):
+                        _sl_remove_by_keys(src, slug)
+                        st.rerun()
+                else:
+                    if st.button("+ Liste", key=btn_key,
+                                 use_container_width=True):
+                        _sl_add(o)
+                        st.rerun()
+
+                # ── Ausblenden-Button ─────────────────────────────────
+                excl_btn_key = _elem_key("excl", src, slug,
+                                         name=o.get("name") or "",
+                                         brand=o.get("brand") or "",
+                                         item_scope=item_name)
+                if st.button("Ausblenden", key=excl_btn_key,
+                             use_container_width=True,
+                             help="Dauerhaft aus diesen Treffern entfernen"):
+                    _repo_excl = OfferRepository(DB_PATH)
+                    _wl_id = next(
+                        (r["id"] for r in _repo_excl.get_wishlist_rows()
+                         if r["name"] == item_name),
+                        None,
+                    )
+                    if _wl_id is not None:
+                        _repo_excl.add_exclude(
+                            _wl_id,
+                            src,
+                            _nm(o.get("brand") or "")[:32],
+                            _nm(o.get("name")  or "")[:40],
+                        )
+                    st.toast("Ausgeblendet — erscheint nicht mehr als Treffer.")
+                    st.cache_data.clear()
+                    st.rerun()
+
+        # Alternativen-Expander (außerhalb der Card)
         if alts:
             with st.expander(f"Verfügbar bei {len(alts)} weiteren Märkten"):
                 alt_rows = []
@@ -445,6 +735,76 @@ def _render_offer_group(item_name: str, products: list[dict], upcoming: bool = F
 # ---------------------------------------------------------------------------
 # Dialog: Löschen bestätigen
 # ---------------------------------------------------------------------------
+
+@st.dialog("Zu Wishlist hinzufügen")
+def _wishlist_add_dialog(offer: dict) -> None:
+    """
+    Dialog zum Anlegen eines neuen Wishlist-Eintrags aus einem Angebot.
+    Vorausgefüllt mit Heuristik-Hauptbegriff + Brand, beides editierbar.
+    Verhindert Duplikate via Live-Prüfung gegen _wishlist_keyword_set().
+    """
+    from src.utils.wishlist_suggest import extract_hauptbegriff
+
+    default_name  = extract_hauptbegriff(
+        offer.get("name") or "", offer.get("brand") or ""
+    )
+    default_brand = (offer.get("brand") or "").strip()
+
+    hauptbegriff = st.text_input(
+        "Produkt-Bezeichnung *",
+        value=default_name,
+        help="z.B. 'Bier' statt 'Pilsener' — wird als Suchbegriff in der Wishlist verwendet.",
+    )
+    brand_input = st.text_input(
+        "Marke *",
+        value=default_brand,
+    )
+
+    # Live-Duplikat-Prüfung bei jedem Tastendruck (gecachtes Set, O(1)-Lookup)
+    _kw_set = _wishlist_keyword_set()
+    is_duplicate = (
+        bool(hauptbegriff.strip())
+        and bool(brand_input.strip())
+        and (_nm(brand_input), _nm(hauptbegriff)) in _kw_set
+    )
+    if is_duplicate:
+        st.warning("Diese Kombination existiert bereits in der Wishlist.")
+
+    st.divider()
+    col_add, col_cancel = st.columns(2)
+
+    if col_add.button(
+        "Hinzufügen",
+        type="primary",
+        disabled=(is_duplicate or not hauptbegriff.strip() or not brand_input.strip()),
+        use_container_width=True,
+    ):
+        try:
+            OfferRepository(DB_PATH).add_wishlist_item(
+                WishlistItem(
+                    name           = hauptbegriff.strip(),
+                    allowed_brands = [brand_input.strip().upper()],
+                    keywords       = [hauptbegriff.strip()],
+                    active         = True,
+                    supermarkets   = [],
+                )
+            )
+            _wishlist_keyword_set.clear()  # Duplikat-Cache invalidieren
+            st.cache_data.clear()          # Alle Angebote-Tabelle + Treffer refreshen
+            st.toast(
+                f"'{hauptbegriff.strip()}' ({brand_input.strip().upper()}) "
+                f"zur Wishlist hinzugefügt."
+            )
+            st.rerun()
+        except sqlite3.IntegrityError:
+            st.error(
+                f"Ein Wishlist-Eintrag mit dem Namen "
+                f"**'{hauptbegriff.strip()}'** existiert bereits."
+            )
+
+    if col_cancel.button("Abbrechen", use_container_width=True):
+        st.rerun()
+
 
 @st.dialog("Eintrag löschen")
 def _confirm_delete(item_id: int, item_name: str) -> None:
@@ -656,8 +1016,8 @@ if not Path(DB_PATH).exists():
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_hits, tab_wish, tab_all, tab_hist, tab_status = st.tabs(
-    ["Treffer", "Wishlist", "Alle Angebote", "Preis-Historie", "Status"]
+tab_hits, tab_shop, tab_wish, tab_all, tab_hist, tab_status = st.tabs(
+    ["Treffer", "Einkaufsliste", "Wishlist", "Alle Angebote", "Preis-Historie", "Status"]
 )
 
 # ── Tab 1: Treffer ──────────────────────────────────────────────────────────
@@ -720,6 +1080,31 @@ with tab_hits:
                         st.info(f"🔔 {_sent} Alarm-E-Mail(s) versendet.")
 
     matched = _load_matched_products()
+
+    # ── Supermarkt-Filter (Quelle: alle aktiven Angebote in der DB) ──────────
+    _all_mkts = sorted({
+        o.get("source") or ""
+        for o in _active_offers()
+        if o.get("source")
+    })
+
+    if _all_mkts:
+        # Checkbox-Zeile: ein Checkbox pro Markt, horizontal
+        cb_cols = st.columns(len(_all_mkts))
+        for _i, _mkt in enumerate(_all_mkts):
+            _key = f"filter_cb_{_mkt}"
+            if _key not in st.session_state:
+                st.session_state[_key] = True
+            with cb_cols[_i]:
+                st.checkbox(get_display_name(_mkt), key=_key)
+
+        _mkt_set = {_mkt for _mkt in _all_mkts if st.session_state.get(f"filter_cb_{_mkt}", True)}
+        matched = {
+            k: [p for p in v if p["primary"].get("source") in _mkt_set]
+            for k, v in matched.items()
+        }
+        matched = {k: v for k, v in matched.items() if v}
+
     total_products = sum(len(v) for v in matched.values())
 
     if total_products == 0:
@@ -779,6 +1164,9 @@ border:1px solid #bbf7d0;border-radius:14px;padding:22px 26px;margin-bottom:20px
 
         st.caption(f"{n_current} aktuelle · {n_upcoming} kommende Treffer")
 
+        # SL-Keys einmalig laden, damit alle Cards konsistenten Zustand zeigen
+        _current_sl_keys = _sl_keys()
+
         # ── Abschnitt 1: Aktuelle Angebote ──
         st.markdown(
             '<div style="font-size:16px;font-weight:700;color:#111;margin:20px 0 4px 0">'
@@ -787,7 +1175,8 @@ border:1px solid #bbf7d0;border-radius:14px;padding:22px 26px;margin-bottom:20px
         )
         if current_by_item:
             for item_name, products in current_by_item.items():
-                _render_offer_group(item_name, products, upcoming=False)
+                _render_offer_group(item_name, products, upcoming=False,
+                                    sl_keys_snapshot=_current_sl_keys)
         else:
             st.info("Keine aktuellen Treffer — schau auch in kommende Angebote unten.")
 
@@ -801,9 +1190,122 @@ border:1px solid #bbf7d0;border-radius:14px;padding:22px 26px;margin-bottom:20px
                 unsafe_allow_html=True,
             )
             for item_name, products in upcoming_by_item.items():
-                _render_offer_group(item_name, products, upcoming=True)
+                _render_offer_group(item_name, products, upcoming=True,
+                                    sl_keys_snapshot=_current_sl_keys)
 
-# ── Tab 2: Wishlist ─────────────────────────────────────────────────────────
+# ── Tab 2: Einkaufsliste ────────────────────────────────────────────────────
+with tab_shop:
+    _repo_sl = OfferRepository(DB_PATH)
+    sl_items = _repo_sl.get_shopping_list()
+    n_sl     = len(sl_items)
+
+    # ── Header + Aktions-Buttons ─────────────────────────────────────────
+    col_sh, col_sb = st.columns([3, 2])
+    with col_sh:
+        st.markdown(
+            '<div style="font-size:22px;font-weight:700;color:#111;margin-bottom:4px">'
+            'Einkaufsliste</div>',
+            unsafe_allow_html=True,
+        )
+        if n_sl > 0:
+            total_sl   = sum(i["sale_price"] or 0 for i in sl_items if not i["checked"])
+            unchecked  = sum(1 for i in sl_items if not i["checked"])
+            st.caption(f"{unchecked} offen · {n_sl - unchecked} erledigt · Gesamt: {total_sl:.2f} €")
+
+    with col_sb:
+        bc1, bc2, bc3 = st.columns(3)
+        if bc1.button("Erledigte löschen", use_container_width=True):
+            _repo_sl.clear_checked_items()
+            st.rerun()
+        if bc2.button("Liste leeren", use_container_width=True):
+            _repo_sl.clear_shopping_list()
+            st.rerun()
+        if bc3.button("Per E-Mail", use_container_width=True):
+            if settings.email_configured:
+                _send_shopping_list_email(sl_items)
+                st.toast("E-Mail versendet!")
+            else:
+                st.error("SMTP nicht konfiguriert (.env fehlt).")
+
+    if not sl_items:
+        st.info("Deine Einkaufsliste ist leer.  \n"
+                "Füge Produkte über den **+ Liste**-Button im Treffer-Tab hinzu.")
+    else:
+        # ── Gruppiert nach Markt ──────────────────────────────────────────
+        by_market: dict[str, list[dict]] = {}
+        for it in sl_items:
+            by_market.setdefault(it["market_name"], []).append(it)
+
+        grand_total = 0.0
+        grand_orig  = 0.0
+
+        for mkt_name, mkt_items in sorted(by_market.items()):
+            mkt_items_s = sorted(mkt_items, key=lambda x: x["product_name"])
+            mkt_total   = sum(i["sale_price"] or 0 for i in mkt_items_s if not i["checked"])
+            grand_total += mkt_total
+            grand_orig  += sum(
+                (i["original_price"] or i["sale_price"] or 0)
+                for i in mkt_items_s if not i["checked"]
+            )
+
+            with st.container(border=True):
+                st.markdown(f"**{mkt_name}** · {len(mkt_items_s)} Artikel")
+
+                for it in mkt_items_s:
+                    checked = bool(it["checked"])
+                    iid     = it["id"]
+
+                    def _on_chk(item_id: int = iid) -> None:
+                        OfferRepository(DB_PATH).toggle_checked(item_id)
+
+                    c_cb, c_name, c_price, c_rm = st.columns([0.5, 4.5, 1.5, 0.5])
+
+                    with c_cb:
+                        st.checkbox("", value=checked, key=f"sl_chk_{iid}",
+                                    on_change=_on_chk)
+
+                    with c_name:
+                        name_md = f"~~{it['product_name']}~~" if checked else f"**{it['product_name']}**"
+                        st.markdown(name_md)
+                        sub = " · ".join(filter(None, [it.get("brand"), it.get("sales_unit")]))
+                        if sub:
+                            st.caption(sub)
+
+                    with c_price:
+                        price = it.get("sale_price")
+                        orig  = it.get("original_price")
+                        if price:
+                            p_md = f"~~{price:.2f} €~~" if checked else f"**{price:.2f} €**"
+                            if orig and orig > price:
+                                p_md += f"  \n~~{orig:.2f} €~~"
+                            st.markdown(p_md)
+
+                    with c_rm:
+                        if st.button("×", key=f"sl_rm_{iid}"):
+                            _repo_sl.remove_from_shopping_list(iid)
+                            st.rerun()
+
+                st.markdown(
+                    f'<div style="text-align:right;color:#555;font-size:13px;'
+                    f'margin-top:4px">Summe {mkt_name}: '
+                    f'<strong>{mkt_total:.2f} €</strong></div>',
+                    unsafe_allow_html=True,
+                )
+
+        # ── Gesamtsumme + Ersparnis ───────────────────────────────────────
+        savings = grand_orig - grand_total
+        savings_txt = (
+            f'  \n<span style="color:#16a34a;font-size:13px">'
+            f'Ersparnis: ~{savings:.2f} € gegenüber UVP</span>'
+            if savings > 0.01 else ""
+        )
+        st.markdown(
+            f'<div style="text-align:right;font-size:17px;font-weight:700;'
+            f'margin-top:14px">Gesamtsumme: {grand_total:.2f} €{savings_txt}</div>',
+            unsafe_allow_html=True,
+        )
+
+# ── Tab 3: Wishlist ─────────────────────────────────────────────────────────
 with tab_wish:
     col_wh, col_wb = st.columns([5, 1])
     col_wh.markdown(
@@ -823,52 +1325,91 @@ with tab_wish:
             "Bitte `python scripts/migrate_wishlist.py` ausführen oder oben hinzufügen."
         )
     else:
-        # Tabellen-Header
-        hdr = st.columns([1, 2, 3, 3, 1.2, 1.2, 0.8, 0.8])
-        for col, label in zip(hdr, ["Aktiv", "Name", "Marken", "Keywords", "Max €", "Einheit", "", ""]):
-            col.markdown(f'<span style="font-size:12px;color:#6b7280;font-weight:600">{label}</span>', unsafe_allow_html=True)
-        st.divider()
-
-        repo = OfferRepository(DB_PATH)
-
         for row in rows:
             item_id   = row["id"]
             item_name = row["name"]
             is_active = bool(row["active"])
 
+            brands_list = json.loads(row.get("allowed_brands") or "[]")
+            kw_list     = json.loads(row.get("keywords") or "[]")
+            max_price   = row.get("max_price")
+            unit_filter = row.get("unit_filter")
+            notes       = row.get("notes") or ""
+
             def _on_toggle(iid: int = item_id) -> None:
                 OfferRepository(DB_PATH).toggle_wishlist_item_active(iid)
                 st.cache_data.clear()
 
-            row_alpha = "1.0" if is_active else "0.45"
-            st.markdown(
-                f'<div style="opacity:{row_alpha}">',
-                unsafe_allow_html=True,
-            )
-            cols = st.columns([1, 2, 3, 3, 1.2, 1.2, 0.8, 0.8])
-            with cols[0]:
-                st.checkbox("", key=f"active_{item_id}", value=is_active, on_change=_on_toggle)
+            with st.container(border=True):
+                # Inaktive Cards visuell ausgrauen
+                if not is_active:
+                    st.markdown(
+                        '<div style="opacity:0.45">',
+                        unsafe_allow_html=True,
+                    )
 
-            cols[1].markdown(
-                f'<span style="font-size:13px;font-weight:600;color:#111">'
-                f'{_html.escape(item_name)}</span>',
-                unsafe_allow_html=True,
-            )
-            brands_list = json.loads(row.get("allowed_brands") or "[]")
-            b_text = ", ".join(brands_list[:2]) + (f" (+{len(brands_list)-2})" if len(brands_list) > 2 else "")
-            cols[2].write(b_text or "–")
-            kw_list = json.loads(row.get("keywords") or "[]")
-            kw_text = ", ".join(kw_list[:3]) + (f" (+{len(kw_list)-3})" if len(kw_list) > 3 else "")
-            cols[3].write(kw_text or "–")
-            cols[4].write(f"{row['max_price']:.2f}" if row.get("max_price") else "–")
-            cols[5].write(row.get("unit_filter") or "–")
-            with cols[6]:
-                if st.button("Bearbeiten", key=f"edit_{item_id}"):
-                    _wishlist_form(edit_id=item_id)
-            with cols[7]:
-                if st.button("Löschen", key=f"del_{item_id}"):
-                    _confirm_delete(item_id, item_name)
-            st.markdown("</div>", unsafe_allow_html=True)
+                c_info, c_actions = st.columns([4, 1])
+
+                with c_info:
+                    status_txt = "" if is_active else " *(inaktiv)*"
+                    st.markdown(f"**{item_name}**{status_txt}")
+
+                    if brands_list:
+                        b = ", ".join(brands_list[:3])
+                        if len(brands_list) > 3:
+                            b += f" (+{len(brands_list)-3})"
+                        st.caption(f"Marken: {b}")
+
+                    if kw_list:
+                        kw = ", ".join(kw_list[:4])
+                        if len(kw_list) > 4:
+                            kw += f" (+{len(kw_list)-4})"
+                        st.caption(f"Keywords: {kw}")
+
+                    limits = []
+                    if max_price:
+                        limits.append(f"Max {max_price:.2f} €")
+                    if unit_filter:
+                        limits.append(f"Einheit: {unit_filter}")
+                    if limits:
+                        st.caption(" · ".join(limits))
+
+                    if notes:
+                        st.caption(f"ℹ {notes[:100]}{'…' if len(notes) > 100 else ''}")
+
+                with c_actions:
+                    st.checkbox(
+                        "Aktiv",
+                        value=is_active,
+                        key=f"active_{item_id}",
+                        on_change=_on_toggle,
+                    )
+                    if st.button("Bearbeiten", key=f"edit_{item_id}", use_container_width=True):
+                        _wishlist_form(edit_id=item_id)
+                    if st.button("Löschen", key=f"del_{item_id}", use_container_width=True):
+                        _confirm_delete(item_id, item_name)
+
+                if not is_active:
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # ── Ausgeblendete Produkte ────────────────────────────
+                _excls = OfferRepository(DB_PATH).get_excludes_for_item(item_id)
+                if _excls:
+                    with st.expander(f"Ausgeblendete Produkte ({len(_excls)})"):
+                        for _ex in _excls:
+                            _c1, _c2 = st.columns([4, 1])
+                            _c1.caption(
+                                f"{_ex['offer_source']} · "
+                                f"{_ex['name_norm'] or _ex['brand_norm']}"
+                            )
+                            if _c2.button(
+                                "Wieder anzeigen",
+                                key=f"unexcl_{_ex['id']}",
+                                use_container_width=True,
+                            ):
+                                OfferRepository(DB_PATH).remove_exclude(_ex["id"])
+                                st.cache_data.clear()
+                                st.rerun()
 
 # ── Tab 3: Alle Angebote ────────────────────────────────────────────────────
 with tab_all:
@@ -903,7 +1444,36 @@ with tab_all:
         })
         cat_filter = st.selectbox("Kategorie", ["Alle"] + cat_opts)
 
-    df_all = _offers_to_df(all_offers)
+    # Daten einmalig laden
+    _all_sl_keys = _sl_keys()
+    _wl_brands   = _wl_tracked_brands()
+
+    rows_all = []
+    for _o in all_offers:
+        _cats_raw = _o.get("category_ids") or "[]"
+        _cats: list[str] = json.loads(_cats_raw) if isinstance(_cats_raw, str) else (_cats_raw or [])
+        _dcats = [c for c in _cats if c != "Angebote"] or _cats
+        _row_src = _o.get("source") or ""
+        _ov_url  = get_overview_url(_row_src) or ""
+        rows_all.append({
+            "_key":      f"{_o.get('source','')}|{_o.get('product_slug','')}",
+            "Liste":     "✓" if (_o.get("source",""), _o.get("product_slug","")) in _all_sl_keys else "",
+            "Wishlist":  "✓" if _nm(_o.get("brand") or "") in _wl_brands else "",
+            "Markt":     get_display_name(_row_src),
+            "_markt_url": _ov_url,
+            "Produkt":   _o.get("name") or "",
+            "Marke":     _o.get("brand") or "",
+            "Preis":     _o.get("sale_price"),
+            "UVP":       _o.get("original_price"),
+            "Rabatt":    _o.get("discount_percent"),
+            "Inhalt":    _o.get("sales_unit_raw") or "",
+            "Basispreis": _fmt_base_price(_o),
+            "Gültig bis": format_german_date(_o.get("valid_until")),
+            "Kategorie": ", ".join(_dcats),
+        })
+
+    df_all = pd.DataFrame(rows_all)
+
     if not df_all.empty:
         if selected_sources:
             source_display = {get_display_name(s) for s in selected_sources}
@@ -919,8 +1489,70 @@ with tab_all:
         if cat_filter != "Alle":
             df_all = df_all[df_all["Kategorie"].str.contains(cat_filter, na=False)]
 
+    df_all = df_all.reset_index(drop=True)
     st.caption(f"{len(df_all)} Produkte")
-    st.dataframe(df_all, use_container_width=True, hide_index=True, column_config=_PRICE_COLS)
+
+    _display_cols = ["Liste", "Wishlist", "Markt", "_markt_url", "Produkt", "Marke",
+                     "Preis", "UVP", "Rabatt", "Inhalt", "Basispreis", "Gültig bis"]
+
+    _all_event = st.dataframe(
+        df_all[_display_cols],
+        column_config={
+            "Liste":      st.column_config.TextColumn("Liste",    width="small"),
+            "Wishlist":   st.column_config.TextColumn("Wishlist", width="small"),
+            "_markt_url": st.column_config.LinkColumn("↗", width="small",
+                          display_text="↗"),
+            **_PRICE_COLS,
+        },
+        on_select="rerun",
+        selection_mode="single-row",
+        hide_index=True,
+        use_container_width=True,
+        key="all_offers_df",
+    )
+
+    # ── Action-Area: erscheint wenn Zeile ausgewählt ───────────────────────
+    _sel_rows = _all_event.selection.rows
+    if _sel_rows:
+        _idx     = _sel_rows[0]
+        _row     = df_all.iloc[_idx]
+        _key_str = str(_row.get("_key", ""))
+        _parts   = _key_str.split("|", 1)
+        _src     = _parts[0]
+        _slg     = _parts[1] if len(_parts) > 1 else ""
+        _sel_offer = next(
+            (_oo for _oo in all_offers
+             if _oo.get("source") == _src and _oo.get("product_slug") == _slg),
+            None,
+        )
+
+        st.caption(
+            f"Ausgewählt: **{_row['Produkt']}** "
+            f"({_row['Marke']}) bei {_row['Markt']}"
+        )
+        _ac1, _ac2, _ = st.columns([1.5, 1.5, 5])
+
+        # Einkaufsliste
+        with _ac1:
+            if _row["Liste"] == "✓":
+                st.button("✓ Auf Liste", key="ao_sl_on",
+                          disabled=True, use_container_width=True)
+            elif _sel_offer and st.button("+ Zur Liste", key="ao_sl_add",
+                                          use_container_width=True):
+                _sl_add(_sel_offer)
+                st.rerun()
+
+        # Wishlist (Stufe 2: Dialog)
+        with _ac2:
+            if _row["Wishlist"] == "✓":
+                st.button("✓ In Wishlist", key="ao_wl_on",
+                          disabled=True, use_container_width=True,
+                          help="Diese Marke wird bereits verfolgt.")
+            elif _sel_offer and st.button("+ Zur Wishlist", key="ao_wl_add",
+                                          use_container_width=True):
+                _wishlist_add_dialog(_sel_offer)
+    else:
+        st.caption("Zeile auswählen für Aktionen.")
 
 # ── Tab 4: Preis-Historie ────────────────────────────────────────────────────
 with tab_hist:

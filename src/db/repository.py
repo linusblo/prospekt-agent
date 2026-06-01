@@ -209,6 +209,48 @@ CREATE TABLE IF NOT EXISTS alerts_sent (
 """
 
 # ---------------------------------------------------------------------------
+# Shopping-List-Tabelle
+# ---------------------------------------------------------------------------
+
+_CREATE_SHOPPING_LIST_TABLE = """
+CREATE TABLE IF NOT EXISTS shopping_list (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    offer_source    TEXT    NOT NULL,
+    offer_slug      TEXT    NOT NULL,
+    product_name    TEXT    NOT NULL,
+    brand           TEXT,
+    sale_price      REAL,
+    original_price  REAL,
+    base_price_text TEXT,
+    sales_unit      TEXT,
+    market_name     TEXT    NOT NULL,
+    added_at        TEXT    NOT NULL,
+    checked         INTEGER NOT NULL DEFAULT 0,
+    notes           TEXT,
+    UNIQUE(offer_source, offer_slug)
+)
+"""
+
+# ---------------------------------------------------------------------------
+# Wishlist-Excludes-Tabelle
+# ---------------------------------------------------------------------------
+
+_CREATE_WISHLIST_EXCLUDES_TABLE = """
+CREATE TABLE IF NOT EXISTS wishlist_excludes (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- wishlist_item_id referenziert wishlist_items.id (numerisch, stabil).
+    -- Falls ein Item gelöscht und neu angelegt wird, bekommt es eine neue ID;
+    -- verwaiste Excludes bleiben dann in der Tabelle, schaden aber nicht.
+    wishlist_item_id   INTEGER NOT NULL,
+    offer_source       TEXT    NOT NULL,
+    brand_norm         TEXT    NOT NULL,   -- normalize_for_matching(brand)[:32]
+    name_norm          TEXT    NOT NULL,   -- normalize_for_matching(name)[:40]
+    excluded_at        TEXT    NOT NULL,
+    UNIQUE(wishlist_item_id, offer_source, brand_norm, name_norm)
+)
+"""
+
+# ---------------------------------------------------------------------------
 # Price-History-Tabelle
 # ---------------------------------------------------------------------------
 
@@ -280,6 +322,8 @@ class OfferRepository:
         with self._connection() as conn:
             conn.execute(_CREATE_OFFERS_TABLE)
             conn.execute(_CREATE_WISHLIST_TABLE)
+            conn.execute(_CREATE_SHOPPING_LIST_TABLE)
+            conn.execute(_CREATE_WISHLIST_EXCLUDES_TABLE)
             conn.execute(_CREATE_PRICE_HISTORY_TABLE)
             conn.execute(_CREATE_HISTORY_INDEX_LOOKUP)
             conn.execute(_CREATE_HISTORY_INDEX_DATE)
@@ -442,6 +486,149 @@ class OfferRepository:
                 "DELETE FROM price_history WHERE scraped_at < ?", (cutoff_str,)
             )
             return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # Shopping-List
+    # ------------------------------------------------------------------
+
+    def add_to_shopping_list(self, offer_data: dict) -> int:
+        """
+        Fügt ein Angebot zur Einkaufsliste hinzu.
+        Duplikate (gleiche source + slug) werden via INSERT OR IGNORE ignoriert.
+        Gibt die neue (oder bestehende) id zurück.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO shopping_list
+                    (offer_source, offer_slug, product_name, brand,
+                     sale_price, original_price, base_price_text,
+                     sales_unit, market_name, added_at)
+                VALUES (?,?,?,?, ?,?,?, ?,?,?)
+                """,
+                (
+                    offer_data.get("offer_source") or "",
+                    offer_data.get("offer_slug") or "",
+                    offer_data.get("product_name") or "",
+                    offer_data.get("brand"),
+                    offer_data.get("sale_price"),
+                    offer_data.get("original_price"),
+                    offer_data.get("base_price_text"),
+                    offer_data.get("sales_unit"),
+                    offer_data.get("market_name") or "",
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM shopping_list WHERE offer_source=? AND offer_slug=?",
+                (offer_data.get("offer_source") or "", offer_data.get("offer_slug") or ""),
+            ).fetchone()
+            return row[0] if row else -1
+
+    def remove_from_shopping_list(self, item_id: int) -> None:
+        """Entfernt einen Eintrag aus der Einkaufsliste."""
+        with self._connection() as conn:
+            conn.execute("DELETE FROM shopping_list WHERE id = ?", (item_id,))
+
+    def toggle_checked(self, item_id: int) -> None:
+        """Wechselt den abgehakt-Status eines Eintrags."""
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE shopping_list SET checked = CASE WHEN checked=1 THEN 0 ELSE 1 END WHERE id=?",
+                (item_id,),
+            )
+
+    def get_shopping_list(self) -> list[dict]:
+        """Gibt alle Einträge sortiert nach Markt und Produktname zurück."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM shopping_list ORDER BY market_name, product_name"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_shopping_list(self) -> None:
+        """Löscht alle Einträge aus der Einkaufsliste."""
+        with self._connection() as conn:
+            conn.execute("DELETE FROM shopping_list")
+
+    def clear_checked_items(self) -> None:
+        """Löscht nur abgehakte Einträge."""
+        with self._connection() as conn:
+            conn.execute("DELETE FROM shopping_list WHERE checked = 1")
+
+    def is_on_shopping_list(self, source: str, slug: str) -> bool:
+        """Prüft ob ein Angebot bereits auf der Einkaufsliste ist."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM shopping_list WHERE offer_source=? AND offer_slug=?",
+                (source, slug),
+            ).fetchone()
+        return row is not None
+
+    # ------------------------------------------------------------------
+    # Wishlist-Excludes
+    # ------------------------------------------------------------------
+
+    def add_exclude(
+        self,
+        wishlist_item_id: int,
+        source: str,
+        brand_norm: str,
+        name_norm: str,
+    ) -> None:
+        """Schließt ein Produkt dauerhaft aus den Treffern eines Wishlist-Items aus.
+        Duplikate werden via INSERT OR IGNORE ignoriert."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO wishlist_excludes
+                    (wishlist_item_id, offer_source, brand_norm, name_norm, excluded_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (wishlist_item_id, source, brand_norm, name_norm, now),
+            )
+
+    def remove_exclude(self, exclude_id: int) -> None:
+        """Hebt einen Ausschluss auf (WHERE id = ?)."""
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM wishlist_excludes WHERE id = ?", (exclude_id,)
+            )
+
+    def get_excludes_for_item(self, wishlist_item_id: int) -> list[dict]:
+        """Gibt alle Ausschlüsse eines Wishlist-Items zurück."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM wishlist_excludes WHERE wishlist_item_id = ?"
+                " ORDER BY excluded_at DESC",
+                (wishlist_item_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_excludes_as_matcher_dict(
+        self,
+    ) -> dict[str, set[tuple[str, str, str]]]:
+        """
+        Gibt alle Ausschlüsse in der Form zurück, die der Matcher erwartet:
+          {wishlist_item_name → {(source, brand_norm, name_norm), ...}}
+        """
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT wi.name AS item_name,
+                       we.offer_source, we.brand_norm, we.name_norm
+                FROM wishlist_excludes we
+                JOIN wishlist_items wi ON wi.id = we.wishlist_item_id
+                """
+            ).fetchall()
+        result: dict[str, set[tuple[str, str, str]]] = {}
+        for row in rows:
+            result.setdefault(row["item_name"], set()).add(
+                (row["offer_source"], row["brand_norm"], row["name_norm"])
+            )
+        return result
 
     def get_price_history_for_product(
         self,
