@@ -1,0 +1,31 @@
+name: "Prospekt-Agent"
+description: "Supermarkt-Angebote Scanner mit täglichem Scraper und Streamlit-Dashboard"
+version: "1.0.0"
+slug: "prospekt_agent"
+url: "https://github.com/linusblo/prospekt-agent"
+arch:
+  - amd64
+startup: services
+boot: auto
+init: false
+
+ports:
+  8501/tcp: 8501
+ports_description:
+  8501/tcp: "Streamlit Dashboard"
+
+map:
+  - data:rw
+
+options:
+  smtp_email: ""
+  smtp_password: ""
+  edeka_market_id: "071115"
+  combi_store_id: "220012809"
+  scrape_time: "06:00"
+schema:
+  smtp_email: str
+  smtp_password: str
+  edeka_market_id: str
+  combi_store_id: str
+  scrape_time: str
