@@ -26,7 +26,7 @@ logging.basicConfig(
 log = logging.getLogger("scheduler")
 
 SCRAPE_TIME = os.getenv("SCRAPE_TIME", "06:00")
-DB_PATH     = os.getenv("DB_PATH", "/data/offers.db")
+DB_PATH     = os.getenv("DB_PATH", "/config/offers.db")
 
 
 def run_scraper() -> None:

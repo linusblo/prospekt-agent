@@ -37,14 +37,14 @@ else
     echo "[WARN] /data/options.json nicht gefunden — verwende Standardwerte."
 fi
 
-# Persistenter Datenbankpfad (bleibt über Restarts erhalten, in HA-Backups)
-export DB_PATH="/data/offers.db"
+# Persistenter Datenbankpfad (addon_config → /config/ im Container)
+export DB_PATH="/config/offers.db"
 
 # ── Erststart-Logik ──────────────────────────────────────────────────────────
 # wishlist.yaml aus dem Container (Repo-Snapshot) als initialer Seed
-if [ ! -f /data/wishlist.yaml ]; then
-    echo "[INFO] Erststart: kopiere Wishlist-Template nach /data/wishlist.yaml"
-    cp /app/wishlist.yaml /data/wishlist.yaml
+if [ ! -f /config/wishlist.yaml ]; then
+    echo "[INFO] Erststart: kopiere Wishlist-Template nach /config/wishlist.yaml"
+    cp /app/wishlist.yaml /config/wishlist.yaml
 fi
 
 # Wishlist in Datenbank importieren wenn DB noch nicht existiert

@@ -1,6 +1,6 @@
 name: "Prospekt-Agent"
 description: "Supermarkt-Angebote Scanner mit täglichem Scraper und Streamlit-Dashboard"
-version: "1.0.0"
+version: "1.0.1"
 slug: "prospekt_agent"
 url: "https://github.com/linusblo/prospekt-agent"
 arch:
@@ -15,7 +15,7 @@ ports_description:
   8501/tcp: "Streamlit Dashboard"
 
 map:
-  - data:rw
+  - addon_config:rw
 
 options:
   smtp_email: ""
