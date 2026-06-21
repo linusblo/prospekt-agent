@@ -1,304 +1,289 @@
 """
-Tests für den Combi-Adapter — kein Netzwerkzugriff, alles via Mock-HTML.
+Tests für den Combi-Adapter (Bonial-API) — kein Netzwerkzugriff, alles
+über konstruierte Raw-Dicts wie sie die Bonial-API liefert.
 
 Getestete Bereiche:
-  - _parse_de_price:   deutsches Komma-Preisformat
-  - _parse_base_price: Grundpreis mit Einheit
-  - _parse_deposit:    Pfand-Parsing
-  - _extract_sku:      Produktnummer aus URL
-  - _get_total_pages:  Paginierungs-Erkennung
-  - CombiAdapter._parse_page: vollständige Produktkarte
+  - _deal_amount:            Preis-Extraktion nach Deal-Typ
+  - _parse_price_by_base_unit: uneinheitliche Grundpreis-Formate
+  - _parse_iso:              ISO-Datum mit Offset ohne Doppelpunkt
+  - _map_offer:               vollständiges Offer-Mapping inkl. Edge Cases
+  - _parse_offer_list:        Liste roher Offers → Offer-Objekte (fehlertolerant)
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-from bs4 import BeautifulSoup
-
 from src.adapters.combi import (
     CombiAdapter,
-    _extract_sku,
-    _get_total_pages,
-    _parse_base_price,
-    _parse_de_price,
-    _parse_deposit,
+    _deal_amount,
+    _map_offer,
+    _parse_iso,
+    _parse_offer_list,
+    _parse_price_by_base_unit,
 )
 from src.models.offer import Supermarket
 
-
-# ---------------------------------------------------------------------------
-# _parse_de_price
-# ---------------------------------------------------------------------------
-
-class TestParseDePrice:
-    def test_standard(self):
-        assert _parse_de_price("0,99 €") == 0.99
-
-    def test_zweistellig(self):
-        assert _parse_de_price("12,14 €") == 12.14
-
-    def test_dreistellig(self):
-        assert _parse_de_price("3,49 €") == 3.49
-
-    def test_groesserer_preis(self):
-        assert _parse_de_price("49,99 €") == 49.99
-
-    def test_leer(self):
-        assert _parse_de_price("") is None
-
-    def test_kein_preis(self):
-        assert _parse_de_price("kein Preis") is None
-
-    def test_ganzzahl(self):
-        assert _parse_de_price("5 €") == 5.0
+_NOW = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
-# _parse_base_price
+# _deal_amount
 # ---------------------------------------------------------------------------
 
-class TestParseBasePrice:
-    def test_liter(self):
-        val, unit = _parse_base_price("3,00 €/1 l")
-        assert val  == 3.00
-        assert unit == "L"   # normalisiert
+class TestDealAmount:
+    def test_findet_sales_price(self):
+        deals = [{"type": "SALES_PRICE", "minAmount": 1.79}]
+        assert _deal_amount(deals, "SALES_PRICE") == 1.79
 
-    def test_kilo(self):
-        val, unit = _parse_base_price("13,96 €/1 kg")
-        assert val  == 13.96
+    def test_ignoriert_anderen_typ(self):
+        deals = [{"type": "REGULAR_PRICE", "minAmount": 3.49}]
+        assert _deal_amount(deals, "SALES_PRICE") is None
+
+    def test_ignoriert_null_preis(self):
+        """OTHER-Deals (Deko-Banner) haben minAmount 0 → kein echter Preis."""
+        deals = [{"type": "OTHER", "minAmount": 0.0}]
+        assert _deal_amount(deals, "OTHER") is None
+
+    def test_leere_liste(self):
+        assert _deal_amount([], "SALES_PRICE") is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_price_by_base_unit
+# ---------------------------------------------------------------------------
+
+class TestParsePriceByBaseUnit:
+    def test_gleichheitszeichen_format(self):
+        deals = [{"type": "SALES_PRICE", "priceByBaseUnit": "1 kg = 6.90"}]
+        val, unit = _parse_price_by_base_unit(deals)
+        assert val == 6.90
         assert unit == "kg"
 
-    def test_kilo_gross(self):
-        val, unit = _parse_base_price("49,75 €/1 kg")
-        assert val  == 49.75
+    def test_ab_format(self):
+        deals = [{"type": "SALES_PRICE", "priceByBaseUnit": "1 l ab 7.52"}]
+        val, unit = _parse_price_by_base_unit(deals)
+        assert val == 7.52
+        assert unit == "L"
+
+    def test_geklammertes_format(self):
+        deals = [{"type": "SALES_PRICE", "priceByBaseUnit": "(1 kg = 12.90)"}]
+        val, unit = _parse_price_by_base_unit(deals)
+        assert val == 12.90
+        assert unit == "kg"
+
+    def test_fallback_auf_special_price(self):
+        deals = [
+            {"type": "SALES_PRICE", "priceByBaseUnit": ""},
+            {"type": "SPECIAL_PRICE", "priceByBaseUnit": "1 kg = 5.56"},
+        ]
+        val, unit = _parse_price_by_base_unit(deals)
+        assert val == 5.56
         assert unit == "kg"
 
     def test_kein_grundpreis(self):
-        val, unit = _parse_base_price("kein Grundpreis")
-        assert val  is None
-        assert unit is None
-
-    def test_leer(self):
-        val, unit = _parse_base_price("")
-        assert val  is None
+        deals = [{"type": "SALES_PRICE", "priceByBaseUnit": ""}]
+        val, unit = _parse_price_by_base_unit(deals)
+        assert val is None
         assert unit is None
 
 
 # ---------------------------------------------------------------------------
-# _parse_deposit
+# _parse_iso
 # ---------------------------------------------------------------------------
 
-class TestParseDeposit:
-    def test_pfand_vorhanden(self):
-        val, is_dep = _parse_deposit("(+ Pfand 0,25 €)")
-        assert val    == 0.25
-        assert is_dep is True
+class TestParseIso:
+    def test_standard_format(self):
+        dt = _parse_iso("2026-06-21T22:00:00.000+0000")
+        assert dt is not None
+        assert dt.year == 2026 and dt.month == 6 and dt.day == 21
 
-    def test_groesseres_pfand(self):
-        val, is_dep = _parse_deposit("(+ Pfand 3,00 €)")
-        assert val    == 3.00
-        assert is_dep is True
+    def test_none_input(self):
+        assert _parse_iso(None) is None
 
-    def test_kein_pfand(self):
-        val, is_dep = _parse_deposit("ohne Pfand")
-        assert val    is None
-        assert is_dep is False
+    def test_leerer_string(self):
+        assert _parse_iso("") is None
 
-    def test_leer(self):
-        val, is_dep = _parse_deposit("")
-        assert val    is None
-        assert is_dep is False
+    def test_ungueltiges_format(self):
+        assert _parse_iso("nicht-ein-datum") is None
 
 
 # ---------------------------------------------------------------------------
-# _extract_sku
+# _map_offer
 # ---------------------------------------------------------------------------
 
-class TestExtractSku:
-    def test_standard_url(self):
-        assert _extract_sku("/coca-cola-zero-sugar_einweg_4504050019.html") == "4504050019"
+def _raw_offer(**overrides) -> dict:
+    """Baut ein realistisches Bonial-Raw-Offer (Philadelphia-Beispiel)."""
+    base = {
+        "id": "43778de7-6978-455d-bd11-aff2d292c6b0",
+        "products": [{
+            "brandName": "Philadelphia",
+            "name": "Frischkäsezubereitung",
+            "description": ["versch. Sorten \n175/195-g-Becher"],
+            "images": ["https://content-media.bonial.biz/abc/main.jpg"],
+        }],
+        "deals": [
+            {"type": "REGULAR_PRICE", "minAmount": 3.49},
+            {"type": "SALES_PRICE", "minAmount": 1.79},
+            {
+                "type": "SPECIAL_PRICE",
+                "minAmount": 1.39,
+                "conditions": [{"other": "MOIN CARD"}],
+                "priceByBaseUnit": "1 kg = 5.56",
+            },
+        ],
+        "validFrom": "2026-06-21T22:00:00.000+0000",
+        "validUntil": "2026-06-27T20:00:00.000+0000",
+        "image": "https://content-media.bonial.biz/abc/main.jpg",
+    }
+    base.update(overrides)
+    return base
 
-    def test_kurze_sku(self):
-        assert _extract_sku("/produkt_12345.html") == "12345"
 
-    def test_bild_url(self):
-        assert _extract_sku(
-            "https://d2y99t05v0nd2u.cloudfront.net/products/images/4504050019_main.jpg"
-        ) is None  # keine _SKU.html in Bild-URLs
+class TestMapOffer:
+    def test_titel_mit_marke(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.name == "Philadelphia Frischkäsezubereitung"
 
-    def test_keine_zahl(self):
-        assert _extract_sku("/produkt-ohne-sku.html") is None
+    def test_titel_ohne_marke(self):
+        raw = _raw_offer()
+        raw["products"][0]["brandName"] = None
+        offer = _map_offer(raw, _NOW)
+        assert offer.name == "Frischkäsezubereitung"
 
-    def test_leer(self):
-        assert _extract_sku("") is None
+    def test_brand_feld(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.brand == "Philadelphia"
+
+    def test_sale_price_aus_sales_price(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.sale_price == 1.79
+
+    def test_original_price_aus_regular_price(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.original_price == 3.49
+
+    def test_card_price_aus_special_price(self):
+        """SPECIAL_PRICE neben SALES_PRICE → Karten-Preis."""
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.card_price == 1.39
+
+    def test_special_price_allein_wird_hauptpreis(self):
+        """Ohne SALES_PRICE wird SPECIAL_PRICE zum Hauptpreis, kein card_price."""
+        raw = _raw_offer(deals=[
+            {"type": "REGULAR_PRICE", "minAmount": 3.99},
+            {"type": "SPECIAL_PRICE", "minAmount": 2.99},
+        ])
+        offer = _map_offer(raw, _NOW)
+        assert offer.sale_price == 2.99
+        assert offer.card_price is None
+
+    def test_description_bereinigt(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.short_description == "versch. Sorten  175/195-g-Becher"
+
+    def test_base_price(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.base_price_value == 5.56
+        assert offer.base_price_unit == "kg"
+
+    def test_image_aus_products(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.image_url == "https://content-media.bonial.biz/abc/main.jpg"
+
+    def test_image_fallback_auf_top_level(self):
+        raw = _raw_offer()
+        raw["products"][0]["images"] = []
+        offer = _map_offer(raw, _NOW)
+        assert offer.image_url == "https://content-media.bonial.biz/abc/main.jpg"
+
+    def test_valid_from_until(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.valid_from.day == 21
+        assert offer.valid_until.day == 27
+
+    def test_source_ist_combi(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.source == Supermarket.COMBI
+
+    def test_product_slug_ist_offer_id(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.product_slug == "43778de7-6978-455d-bd11-aff2d292c6b0"
+
+    def test_category_ids(self):
+        offer = _map_offer(_raw_offer(), _NOW)
+        assert offer.category_ids == ["Angebote"]
+
+    # ── Edge Cases ──────────────────────────────────────────────────────
+
+    def test_keine_id_wird_uebersprungen(self):
+        raw = _raw_offer(id=None)
+        assert _map_offer(raw, _NOW) is None
+
+    def test_keine_products_wird_uebersprungen(self):
+        raw = _raw_offer(products=[])
+        assert _map_offer(raw, _NOW) is None
+
+    def test_leerer_name_wird_uebersprungen(self):
+        raw = _raw_offer()
+        raw["products"][0]["name"] = ""
+        assert _map_offer(raw, _NOW) is None
+
+    def test_deko_banner_ohne_preis_wird_uebersprungen(self):
+        """OTHER-Deal-Typ mit minAmount 0 (Rubrik-Banner) → kein Offer."""
+        raw = _raw_offer(
+            deals=[{"type": "OTHER", "minAmount": 0.0, "priceByBaseUnit": ""}],
+        )
+        assert _map_offer(raw, _NOW) is None
+
+    def test_recommended_retail_price_als_fallback(self):
+        raw = _raw_offer(deals=[
+            {"type": "SALES_PRICE", "minAmount": 17.99},
+            {"type": "RECOMMENDED_RETAIL_PRICE", "minAmount": 39.99},
+        ])
+        offer = _map_offer(raw, _NOW)
+        assert offer.original_price == 39.99
 
 
 # ---------------------------------------------------------------------------
-# _get_total_pages
+# _parse_offer_list
 # ---------------------------------------------------------------------------
 
-class TestGetTotalPages:
-    def _soup(self, html: str) -> BeautifulSoup:
-        return BeautifulSoup(html, "lxml")
+class TestParseOfferList:
+    def test_filtert_ungueltige_offers(self):
+        raw_list = [
+            _raw_offer(),
+            {"id": "deko-1", "products": [], "deals": []},  # kein Produkt
+            {"id": None, "products": [{"name": "x"}], "deals": []},  # keine ID
+        ]
+        offers = _parse_offer_list(raw_list, _NOW)
+        assert len(offers) == 1
 
-    def test_seite_x_von_y(self):
-        soup = self._soup("<div>Seite 1 von 20</div>")
-        assert _get_total_pages(soup) == 20
+    def test_fehlerhafter_eintrag_bricht_nicht_ab(self):
+        """Ein kaputter Eintrag (kein dict-Zugriff möglich) darf andere nicht stoppen."""
+        raw_list = [None, _raw_offer()]
+        offers = _parse_offer_list(raw_list, _NOW)
+        assert len(offers) == 1
 
-    def test_eine_seite_fallback(self):
-        soup = self._soup("<div>Keine Paginierung</div>")
-        assert _get_total_pages(soup) == 1
-
-    def test_mehrseitig(self):
-        soup = self._soup("<span class='pager'>Seite 3 von 15</span>")
-        assert _get_total_pages(soup) == 15
-
-
-# ---------------------------------------------------------------------------
-# Mock-HTML Fixture
-# ---------------------------------------------------------------------------
-
-_MOCK_HTML = """<!DOCTYPE html>
-<html><body>
-
-<div>Seite 1 von 2</div>
-
-<!-- Produkt 1: Coca-Cola mit Rabatt + Pfand -->
-<div class="product-card__description">
-  <a href="/coca-cola-zero-sugar_einweg_4504050019.html"
-     class="product-card__poster__link">
-    <img class="product-card__photo"
-         src="https://d2y99t05v0nd2u.cloudfront.net/products/images/4504050019_main.jpg"
-         alt="Coca-Cola Zero Sugar (Einweg)" />
-  </a>
-  <span class="product-card__name">
-    <a class="product-card__name__link"
-       href="/coca-cola-zero-sugar_einweg_4504050019.html">
-      Coca-Cola Zero Sugar (Einweg)
-    </a>
-  </span>
-  <small class="product-card__weight">330 ml</small>
-  <div class="product-card__price--current"><strong>0,99 €</strong></div>
-  <del class="product-card__price--old"><strong>1,19 €</strong></del>
-  <div class="product-card__bulk-price">3,00 €/1 l</div>
-  <div class="product-card__deposit">(+ Pfand 0,25 €)</div>
-</div>
-
-<!-- Produkt 2: Kaffee ohne Rabatt, ohne Pfand -->
-<div class="product-card__description">
-  <a href="/dallmayr-prodomo_500g_1234567890.html"
-     class="product-card__poster__link">
-    <img class="product-card__photo"
-         src="https://d2y99t05v0nd2u.cloudfront.net/products/images/1234567890_main.jpg"
-         alt="Dallmayr Prodomo" />
-  </a>
-  <span class="product-card__name">
-    <a class="product-card__name__link"
-       href="/dallmayr-prodomo_500g_1234567890.html">
-      Dallmayr Prodomo
-    </a>
-  </span>
-  <small class="product-card__weight">500 g</small>
-  <div class="product-card__price--current"><strong>4,99 €</strong></div>
-  <div class="product-card__bulk-price">9,98 €/1 kg</div>
-</div>
-
-<!-- Produkt 3: Ohne SKU → wird übersprungen -->
-<div class="product-card__description">
-  <span class="product-card__name">
-    <a class="product-card__name__link" href="/produkt-ohne-sku.html">
-      Produkt ohne SKU
-    </a>
-  </span>
-  <div class="product-card__price--current"><strong>1,99 €</strong></div>
-</div>
-
-</body></html>
-"""
+    def test_leere_liste(self):
+        assert _parse_offer_list([], _NOW) == []
 
 
 # ---------------------------------------------------------------------------
-# CombiAdapter Integration (kein Netzwerk)
+# CombiAdapter
 # ---------------------------------------------------------------------------
 
-class TestCombiAdapterParsing:
-    @pytest.fixture
-    def adapter(self) -> CombiAdapter:
-        return CombiAdapter("220012809")
-
-    @pytest.fixture
-    def offers(self, adapter):
-        soup = BeautifulSoup(_MOCK_HTML, "lxml")
-        now  = datetime.now(timezone.utc)
-        return list(adapter._parse_page(soup, now, set()))
-
-    def test_adapter_instanziierbar(self, adapter):
+class TestCombiAdapter:
+    def test_source_name(self):
+        adapter = CombiAdapter()
         assert adapter.source_name == "combi"
         assert adapter.source_name == Supermarket.COMBI.value
 
-    def test_zwei_gueltige_angebote(self, offers):
-        """3 Karten im HTML, 1 ohne SKU → 2 Angebote."""
-        assert len(offers) == 2
+    def test_default_ids(self):
+        adapter = CombiAdapter()
+        assert adapter._store_id == "DE-1031632951"
+        assert adapter._publisher_id == "DE-42265682"
 
-    def test_source_ist_combi(self, offers):
-        assert all(o.source == Supermarket.COMBI for o in offers)
-
-    def test_cola_preis(self, offers):
-        cola = next(o for o in offers if "Coca" in o.name)
-        assert cola.sale_price == 0.99
-
-    def test_cola_alter_preis(self, offers):
-        cola = next(o for o in offers if "Coca" in o.name)
-        assert cola.original_price == 1.19
-
-    def test_cola_rabatt(self, offers):
-        cola = next(o for o in offers if "Coca" in o.name)
-        assert cola.discount_percent is not None
-        assert abs(cola.discount_percent - 16.8) < 0.5
-
-    def test_cola_grundpreis(self, offers):
-        cola = next(o for o in offers if "Coca" in o.name)
-        assert cola.base_price_value == 3.00
-        assert cola.base_price_unit  == "L"
-
-    def test_cola_pfand(self, offers):
-        cola = next(o for o in offers if "Coca" in o.name)
-        assert cola.is_deposit_product is True
-        assert cola.deposit_value == 0.25
-
-    def test_cola_slug(self, offers):
-        cola = next(o for o in offers if "Coca" in o.name)
-        assert cola.product_slug == "4504050019"
-
-    def test_kaffee_kein_pfand(self, offers):
-        kaffee = next(o for o in offers if "Dallmayr" in o.name)
-        assert kaffee.is_deposit_product is False
-        assert kaffee.deposit_value is None
-
-    def test_kaffee_grundpreis_kg(self, offers):
-        kaffee = next(o for o in offers if "Dallmayr" in o.name)
-        assert kaffee.base_price_value == 9.98
-        assert kaffee.base_price_unit  == "kg"
-
-    def test_kaffee_sales_unit(self, offers):
-        kaffee = next(o for o in offers if "Dallmayr" in o.name)
-        assert kaffee.sales_unit_raw == "500 g"
-
-    def test_category_ids(self, offers):
-        assert all(o.category_ids == ["Angebote"] for o in offers)
-
-    def test_dedup_verhindert_doppelten_eintrag(self, adapter):
-        """Gleiche SKU auf zwei Seiten: nur einmal im Ergebnis."""
-        soup     = BeautifulSoup(_MOCK_HTML, "lxml")
-        now      = datetime.now(timezone.utc)
-        seen     = set()
-        offers1  = list(adapter._parse_page(soup, now, seen))
-        # Zweite Runde mit gleichen seen-SKUs → 0 neue Angebote
-        offers2  = list(adapter._parse_page(soup, now, seen))
-        assert len(offers1) == 2
-        assert len(offers2) == 0
-
-    def test_pagination_erkannt(self):
-        soup = BeautifulSoup(_MOCK_HTML, "lxml")
-        assert _get_total_pages(soup) == 2
+    def test_custom_ids(self):
+        adapter = CombiAdapter("DE-9999999999", "DE-1111111111")
+        assert adapter._store_id == "DE-9999999999"
+        assert adapter._publisher_id == "DE-1111111111"

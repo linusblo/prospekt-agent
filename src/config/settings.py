@@ -28,12 +28,13 @@ class Settings:
             )
         # Edeka: Filial-ID (leer → Edeka-Adapter wird nicht geladen)
         self.EDEKA_MARKET_ID: str = os.getenv("EDEKA_MARKET_ID", "071115")
-        # Combi: Store-ID (leer → Combi-Adapter wird nicht geladen)
-        self.COMBI_STORE_ID: str = os.getenv("COMBI_STORE_ID", "220012809")
+        # Combi: Bonial Store-/Publisher-ID (leer → Combi-Adapter wird nicht geladen)
+        self.COMBI_STORE_ID: str = os.getenv("COMBI_STORE_ID", "DE-1031632951")
+        self.COMBI_PUBLISHER_ID: str = os.getenv("COMBI_PUBLISHER_ID", "DE-42265682")
         if not self.COMBI_STORE_ID:
             log.warning(
                 "COMBI_STORE_ID fehlt in .env — Combi-Adapter deaktiviert. "
-                "Setze COMBI_STORE_ID=<StoreID> um Combi-Angebote zu laden."
+                "Setze COMBI_STORE_ID=<Bonial-StoreID> um Combi-Angebote zu laden."
             )
         if not self.EDEKA_MARKET_ID:
             log.warning(

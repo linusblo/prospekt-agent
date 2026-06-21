@@ -23,7 +23,8 @@ Unterstützte Märkte: Aldi Nord, Kaufland, Edeka, Combi, Trinkgut.
 | `smtp_email` | — | Absender-Adresse für E-Mail-Alarme |
 | `smtp_password` | — | Gmail App-Passwort (kein Account-Passwort!) |
 | `edeka_market_id` | `071115` | Edeka Filial-ID (aus der Angebots-URL) |
-| `combi_store_id` | `220012809` | Combi Store-ID |
+| `combi_store_id` | `DE-1031632951` | Combi Bonial-Store-ID (Wochenprospekt) |
+| `combi_publisher_id` | `DE-42265682` | Combi Bonial-Publisher-ID |
 | `scrape_time` | `06:00` | Uhrzeit des täglichen Scraper-Laufs (HH:MM) |
 
 ---

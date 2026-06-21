@@ -1,6 +1,6 @@
 name: "Prospekt-Agent"
 description: "Supermarkt-Angebote Scanner mit täglichem Scraper und Streamlit-Dashboard"
-version: "1.0.1"
+version: "1.1.0"
 slug: "prospekt_agent"
 url: "https://github.com/linusblo/prospekt-agent"
 arch:
@@ -21,11 +21,13 @@ options:
   smtp_email: ""
   smtp_password: ""
   edeka_market_id: "071115"
-  combi_store_id: "220012809"
+  combi_store_id: "DE-1031632951"
+  combi_publisher_id: "DE-42265682"
   scrape_time: "06:00"
 schema:
   smtp_email: str
   smtp_password: str
   edeka_market_id: str
   combi_store_id: str
+  combi_publisher_id: str
   scrape_time: str

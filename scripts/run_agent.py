@@ -42,7 +42,7 @@ if settings.EDEKA_MARKET_ID:
     ADAPTERS.append(EdekaAdapter(settings.EDEKA_MARKET_ID))
 
 if settings.COMBI_STORE_ID:
-    ADAPTERS.append(CombiAdapter(settings.COMBI_STORE_ID))
+    ADAPTERS.append(CombiAdapter(settings.COMBI_STORE_ID, settings.COMBI_PUBLISHER_ID))
 
 
 def main() -> None:

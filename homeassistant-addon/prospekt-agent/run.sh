@@ -24,9 +24,10 @@ except Exception as e:
 pairs = {
     "SMTP_EMAIL":      opts.get("smtp_email",      ""),
     "SMTP_PASSWORD":   opts.get("smtp_password",   ""),
-    "EDEKA_MARKET_ID": opts.get("edeka_market_id", "071115"),
-    "COMBI_STORE_ID":  opts.get("combi_store_id",  "220012809"),
-    "SCRAPE_TIME":     opts.get("scrape_time",     "06:00"),
+    "EDEKA_MARKET_ID":    opts.get("edeka_market_id",    "071115"),
+    "COMBI_STORE_ID":     opts.get("combi_store_id",     "DE-1031632951"),
+    "COMBI_PUBLISHER_ID": opts.get("combi_publisher_id", "DE-42265682"),
+    "SCRAPE_TIME":        opts.get("scrape_time",        "06:00"),
 }
 for k, v in pairs.items():
     v = str(v).replace("'", "'\\''")   # Shell-sicheres Escaping
