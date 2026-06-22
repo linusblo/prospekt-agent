@@ -8,7 +8,7 @@ WORKDIR /app
 # GIT_TAG wird von build.yaml übergeben (default: "main").
 # Für deterministische Releases: Tag setzen, build.yaml aktualisieren.
 #   --depth 1: Shallow Clone, lädt nur den Stand des angegebenen Tags/Branches.
-ARG GIT_TAG=main
+ARG GIT_TAG=a798e76
 RUN git clone --depth 1 --branch ${GIT_TAG} \
         https://github.com/linusblo/prospekt-agent.git /tmp/repo \
     && cp -r /tmp/repo/src         ./src         \
