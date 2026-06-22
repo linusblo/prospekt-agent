@@ -732,6 +732,94 @@ def _render_offer_group(
                 st.dataframe(pd.DataFrame(alt_rows), hide_index=True, use_container_width=True)
 
 
+def _render_search_result_card(o: dict, sl_keys_snapshot: set[tuple[str, str]]) -> None:
+    """Ergebnis-Card der Volltextsuche — reduzierte Variante von _render_offer_group
+    (kein Wishlist-Kontext, daher keine Ampel/Ausblenden/Alternativen)."""
+    price  = o.get("sale_price") or 0.0
+    orig   = o.get("original_price")
+    disc   = o.get("discount_percent")
+    card_p = o.get("card_price")
+    unit_raw = o.get("sales_unit_raw") or ""
+    bp_str   = _fmt_base_price(o)
+    content  = unit_raw + (f" · {bp_str}" if bp_str else "")
+
+    with st.container(border=True):
+        c_img, c_main, c_right = st.columns([1, 3.5, 1.8])
+
+        with c_img:
+            img_url = o.get("image_url")
+            if img_url:
+                st.image(img_url, width=60)
+
+        with c_main:
+            st.markdown(f"**{o.get('name', '')}**")
+            brand = o.get("brand") or ""
+            if brand:
+                st.caption(brand)
+            if content:
+                st.caption(content)
+
+        with c_right:
+            price_md = f"**{price:.2f} €**"
+            if orig:
+                price_md += f"  ~~{orig:.2f} €~~"
+            st.markdown(price_md)
+
+            if disc:
+                st.markdown(
+                    f'<span style="background:#dcfce7;color:#16a34a;'
+                    f'font-size:11px;font-weight:600;padding:1px 6px;'
+                    f'border-radius:4px">−{disc:.0f}%</span>',
+                    unsafe_allow_html=True,
+                )
+
+            if card_p:
+                st.caption(f"🃏 {card_p:.2f} €*")
+
+            src  = o.get("source") or ""
+            slug = o.get("product_slug") or ""
+            market_txt = get_display_name(src)
+            _ov_url = get_overview_url(src)
+            if _ov_url:
+                st.caption(f"[{market_txt} ↗]({_ov_url})")
+            else:
+                st.caption(market_txt)
+
+            st.caption(format_german_date(o.get("valid_until")))
+
+            on_sl = (src, slug) in sl_keys_snapshot
+            btn_key = _elem_key("sl", src, slug,
+                                name=o.get("name") or "",
+                                brand=o.get("brand") or "",
+                                item_scope="suche")
+            if on_sl:
+                if st.button("✓ Auf Liste", key=btn_key,
+                             use_container_width=True,
+                             help="Aus Einkaufsliste entfernen"):
+                    _sl_remove_by_keys(src, slug)
+                    st.rerun()
+            else:
+                if st.button("+ Liste", key=btn_key,
+                             use_container_width=True):
+                    _sl_add(o)
+                    st.rerun()
+
+
+def _render_search_results(query: str) -> None:
+    """Rendert die Volltextsuche-Ergebnisse — gleiche Card-Optik wie Wishlist-Treffer."""
+    results = OfferRepository(DB_PATH).search_offers(query)
+
+    if not results:
+        st.caption(f"Keine Angebote für '{query}' gefunden")
+        return
+
+    st.caption(f"{len(results)} Treffer für '{query}'")
+
+    sl_keys_snapshot = _sl_keys()
+    for o in results:
+        _render_search_result_card(o, sl_keys_snapshot)
+
+
 # ---------------------------------------------------------------------------
 # Dialog: Löschen bestätigen
 # ---------------------------------------------------------------------------
@@ -1079,74 +1167,85 @@ with tab_hits:
                     if _sent:
                         st.info(f"🔔 {_sent} Alarm-E-Mail(s) versendet.")
 
-    matched = _load_matched_products()
+    # ── Suche (ersetzt bei Eingabe die komplette Treffer-Ansicht unten) ──────
+    search_query = st.text_input(
+        "Suche",
+        key="treffer_search_query",
+        placeholder="🔍 Suche nach Produkt, Marke oder Beschreibung...",
+        label_visibility="collapsed",
+    )
 
-    # ── Supermarkt-Filter (Quelle: alle aktiven Angebote in der DB) ──────────
-    _all_mkts = sorted({
-        o.get("source") or ""
-        for o in _active_offers()
-        if o.get("source")
-    })
-
-    if _all_mkts:
-        # Checkbox-Zeile: ein Checkbox pro Markt, horizontal
-        cb_cols = st.columns(len(_all_mkts))
-        for _i, _mkt in enumerate(_all_mkts):
-            _key = f"filter_cb_{_mkt}"
-            if _key not in st.session_state:
-                st.session_state[_key] = True
-            with cb_cols[_i]:
-                st.checkbox(get_display_name(_mkt), key=_key)
-
-        _mkt_set = {_mkt for _mkt in _all_mkts if st.session_state.get(f"filter_cb_{_mkt}", True)}
-        matched = {
-            k: [p for p in v if p["primary"].get("source") in _mkt_set]
-            for k, v in matched.items()
-        }
-        matched = {k: v for k, v in matched.items() if v}
-
-    total_products = sum(len(v) for v in matched.values())
-
-    if total_products == 0:
-        st.info(
-            "Keine Treffer.  \n"
-            "Mögliche Ursachen: Wishlist leer (→ `migrate_wishlist.py` ausführen), "
-            "keine aktiven Angebote, oder alle Filter zu streng."
-        )
+    if search_query.strip():
+        _render_search_results(search_query.strip())
     else:
-        # ── Produkte in "aktuell" und "kommend" aufteilen ──
-        now_dt = datetime.now(timezone.utc)
+        matched = _load_matched_products()
 
-        current_by_item: dict[str, list[dict]] = {}
-        upcoming_list: list[tuple[datetime, str, dict]] = []
+        # ── Supermarkt-Filter (Quelle: alle aktiven Angebote in der DB) ──────
+        _all_mkts = sorted({
+            o.get("source") or ""
+            for o in _active_offers()
+            if o.get("source")
+        })
 
-        for item_name, products in matched.items():
-            for prod in products:
-                vf_dt = _parse_iso_to_dt(prod["primary"].get("valid_from"))
-                if vf_dt and vf_dt > now_dt:
-                    upcoming_list.append((vf_dt, item_name, prod))
-                else:
-                    current_by_item.setdefault(item_name, []).append(prod)
+        if _all_mkts:
+            # Checkbox-Zeile: ein Checkbox pro Markt, horizontal
+            cb_cols = st.columns(len(_all_mkts))
+            for _i, _mkt in enumerate(_all_mkts):
+                _key = f"filter_cb_{_mkt}"
+                if _key not in st.session_state:
+                    st.session_state[_key] = True
+                with cb_cols[_i]:
+                    st.checkbox(get_display_name(_mkt), key=_key)
 
-        # Kommende: erst nach valid_from, dann nach Wishlist-Name
-        upcoming_list.sort(key=lambda t: (t[0], t[1]))
-        upcoming_by_item: dict[str, list[dict]] = {}
-        for _, item_name, prod in upcoming_list:
-            upcoming_by_item.setdefault(item_name, []).append(prod)
+            _mkt_set = {_mkt for _mkt in _all_mkts if st.session_state.get(f"filter_cb_{_mkt}", True)}
+            matched = {
+                k: [p for p in v if p["primary"].get("source") in _mkt_set]
+                for k, v in matched.items()
+            }
+            matched = {k: v for k, v in matched.items() if v}
 
-        n_current  = sum(len(v) for v in current_by_item.values())
-        n_upcoming = len(upcoming_list)
+        total_products = sum(len(v) for v in matched.values())
 
-        # ── Spar-Übersicht Card ────────────────────────────────────────
-        total_s, n_prod, n_mkts, best_deal = _savings_summary(current_by_item)
-        if total_s > 0:
-            best_html = (
-                f'<div style="font-size:12px;color:#15803d;margin-top:12px;'
-                f'padding-top:12px;border-top:1px solid #bbf7d0">'
-                f'<span style="font-weight:600">Bester Deal: </span>'
-                f'{_html.escape(best_deal)}</div>'
-            ) if best_deal else ""
-            st.markdown(f"""
+        if total_products == 0:
+            st.info(
+                "Keine Treffer.  \n"
+                "Mögliche Ursachen: Wishlist leer (→ `migrate_wishlist.py` ausführen), "
+                "keine aktiven Angebote, oder alle Filter zu streng."
+            )
+        else:
+            # ── Produkte in "aktuell" und "kommend" aufteilen ──
+            now_dt = datetime.now(timezone.utc)
+
+            current_by_item: dict[str, list[dict]] = {}
+            upcoming_list: list[tuple[datetime, str, dict]] = []
+
+            for item_name, products in matched.items():
+                for prod in products:
+                    vf_dt = _parse_iso_to_dt(prod["primary"].get("valid_from"))
+                    if vf_dt and vf_dt > now_dt:
+                        upcoming_list.append((vf_dt, item_name, prod))
+                    else:
+                        current_by_item.setdefault(item_name, []).append(prod)
+
+            # Kommende: erst nach valid_from, dann nach Wishlist-Name
+            upcoming_list.sort(key=lambda t: (t[0], t[1]))
+            upcoming_by_item: dict[str, list[dict]] = {}
+            for _, item_name, prod in upcoming_list:
+                upcoming_by_item.setdefault(item_name, []).append(prod)
+
+            n_current  = sum(len(v) for v in current_by_item.values())
+            n_upcoming = len(upcoming_list)
+
+            # ── Spar-Übersicht Card ────────────────────────────────────────
+            total_s, n_prod, n_mkts, best_deal = _savings_summary(current_by_item)
+            if total_s > 0:
+                best_html = (
+                    f'<div style="font-size:12px;color:#15803d;margin-top:12px;'
+                    f'padding-top:12px;border-top:1px solid #bbf7d0">'
+                    f'<span style="font-weight:600">Bester Deal: </span>'
+                    f'{_html.escape(best_deal)}</div>'
+                ) if best_deal else ""
+                st.markdown(f"""
 <div style="background:linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%);
 border:1px solid #bbf7d0;border-radius:14px;padding:22px 26px;margin-bottom:20px">
   <div style="font-size:12px;color:#16a34a;font-weight:600;
@@ -1162,36 +1261,38 @@ border:1px solid #bbf7d0;border-radius:14px;padding:22px 26px;margin-bottom:20px
   {best_html}
 </div>""", unsafe_allow_html=True)
 
-        st.caption(f"{n_current} aktuelle · {n_upcoming} kommende Treffer")
+            st.caption(f"{n_current} aktuelle · {n_upcoming} kommende Treffer")
 
-        # SL-Keys einmalig laden, damit alle Cards konsistenten Zustand zeigen
-        _current_sl_keys = _sl_keys()
+            # SL-Keys einmalig laden, damit alle Cards konsistenten Zustand zeigen
+            _current_sl_keys = _sl_keys()
 
-        # ── Abschnitt 1: Aktuelle Angebote ──
-        st.markdown(
-            '<div style="font-size:16px;font-weight:700;color:#111;margin:20px 0 4px 0">'
-            'Aktuelle Angebote</div>',
-            unsafe_allow_html=True,
-        )
-        if current_by_item:
-            for item_name, products in current_by_item.items():
-                _render_offer_group(item_name, products, upcoming=False,
-                                    sl_keys_snapshot=_current_sl_keys)
-        else:
-            st.info("Keine aktuellen Treffer — schau auch in kommende Angebote unten.")
-
-        # ── Abschnitt 2: Kommende Angebote ──
-        if upcoming_by_item:
+            # ── Abschnitt 1: Aktuelle Angebote ──
             st.markdown(
-                '<div style="font-size:16px;font-weight:700;color:#111;margin:28px 0 2px 0">'
-                'Kommende Angebote</div>'
-                '<div style="font-size:12px;color:#9ca3af;margin-bottom:4px">'
-                'gültig ab nächster Woche</div>',
+                '<div style="font-size:16px;font-weight:700;color:#111;margin:20px 0 4px 0">'
+                'Aktuelle Angebote</div>',
                 unsafe_allow_html=True,
             )
-            for item_name, products in upcoming_by_item.items():
-                _render_offer_group(item_name, products, upcoming=True,
-                                    sl_keys_snapshot=_current_sl_keys)
+            if current_by_item:
+                for item_name, products in current_by_item.items():
+                    _render_offer_group(item_name, products, upcoming=False,
+                                        sl_keys_snapshot=_current_sl_keys)
+            else:
+                st.info("Keine aktuellen Treffer — schau auch in kommende Angebote unten.")
+
+            # ── Abschnitt 2: Kommende Angebote ──
+            if upcoming_by_item:
+                st.markdown(
+                    '<div style="font-size:16px;font-weight:700;color:#111;margin:28px 0 6px 0">'
+                    'Kommende Angebote</div>'
+                    '<div style="display:inline-block;font-size:15px;font-weight:600;'
+                    'color:#92400e;background:#fef3c7;padding:3px 10px;border-radius:6px;'
+                    'margin-bottom:8px">'
+                    'gültig ab nächster Woche</div>',
+                    unsafe_allow_html=True,
+                )
+                for item_name, products in upcoming_by_item.items():
+                    _render_offer_group(item_name, products, upcoming=True,
+                                        sl_keys_snapshot=_current_sl_keys)
 
 # ── Tab 2: Einkaufsliste ────────────────────────────────────────────────────
 with tab_shop:

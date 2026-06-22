@@ -385,6 +385,20 @@ class OfferRepository:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    def search_offers(self, query: str) -> list[dict]:
+        """
+        Case-insensitive Volltextsuche über name/brand/short_description/
+        long_description aktiver Angebote. Mehrere durch Leerzeichen getrennte
+        Wörter werden UND-verknüpft (jedes muss als Substring vorkommen).
+        Sortiert nach discount_percent DESC, dann sale_price ASC.
+        """
+        words = query.strip().lower().split()
+        if not words:
+            return []
+        matches = [o for o in self.get_active_offers() if _offer_matches_words(o, words)]
+        matches.sort(key=lambda o: (-(o.get("discount_percent") or 0), o.get("sale_price") or 0))
+        return matches
+
     def count(self, source: str | None = None) -> int:
         with self._connection() as conn:
             query = "SELECT COUNT(*) FROM offers"
@@ -863,6 +877,16 @@ class OfferRepository:
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
+
+_SEARCH_FIELDS = ("name", "brand", "short_description", "long_description")
+
+
+def _offer_matches_words(offer: dict, words: list[str]) -> bool:
+    """True wenn jedes Wort in `words` als Substring in einem der Suchfelder
+    vorkommt (case-insensitive, UND-verknüpft über alle Wörter)."""
+    haystack = " ".join(offer.get(field) or "" for field in _SEARCH_FIELDS).lower()
+    return all(word in haystack for word in words)
+
 
 def _offer_to_row(offer: Offer) -> tuple:
     return (
