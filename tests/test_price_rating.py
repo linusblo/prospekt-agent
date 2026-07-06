@@ -28,6 +28,7 @@ def _offer(
     unit: str = "1-L-Packung",
     base_price: float | None = None,
     slug_suffix: str = "",
+    valid_from: datetime | None = None,
 ) -> Offer:
     return Offer(
         source=Supermarket.ALDI_NORD,
@@ -40,20 +41,24 @@ def _offer(
         sales_unit_raw=unit,
         category_ids=["Angebote"],
         scraped_at=scraped_at,
+        valid_from=valid_from,
     )
 
 
 def _add_prices(repo: OfferRepository, prices: list[float], brand="ARLA", name="Frische Milch") -> None:
     """
-    Speichert N Angebote mit unterschiedlichem scraped_at in price_history.
-    Alle Einträge liegen innerhalb der letzten 60 Tage (< 90-Tage-Filter).
+    Speichert N Angebote als N distinkte Angebotsperioden in price_history.
+    Jeder Eintrag bekommt valid_from=scraped_at, damit der Dedup-Mechanismus
+    jeden Eintrag als eigenständiges Angebot behandelt (kein tages-basiertes
+    Zusammenfassen gleicher Preise).
     """
     n = len(prices)
     for i, price in enumerate(prices):
         # ältester Eintrag vor (n - 1) Tagen, neuester gestern
         dt = datetime.now(timezone.utc) - timedelta(days=(n - 1 - i))
         repo.save_price_history_entry(
-            _offer(price, dt, brand=brand, name=name, slug_suffix=str(i))
+            _offer(price, dt, brand=brand, name=name, slug_suffix=str(i),
+                   valid_from=dt)
         )
 
 
@@ -231,3 +236,77 @@ class TestRatingEmoji:
         for level in ("green", "yellow", "red", "no_data"):
             assert level in RATING_EMOJI
             assert RATING_EMOJI[level]
+
+
+# ---------------------------------------------------------------------------
+# Dedup: Angebots-Ebene statt Tages-Ebene
+# ---------------------------------------------------------------------------
+
+class TestDedup:
+    def test_seven_daily_scrapes_same_price_count_as_one(self, repo):
+        """7 Tageseinträge desselben Angebots (kein valid_from) → 1 Datenpunkt."""
+        for i in range(7):
+            dt = datetime.now(timezone.utc) - timedelta(days=6 - i)
+            repo.save_price_history_entry(
+                _offer(1.99, dt, slug_suffix=str(i))  # kein valid_from
+            )
+        results = repo.get_price_history_for_product(
+            source="aldi_nord", brand_lower="arla",
+            name_lower="frische milch", sales_unit_raw="1-L-Packung",
+        )
+        assert len(results) == 1
+
+    def test_same_price_two_weeks_apart_counts_as_two(self, repo):
+        """Selber Preis in zwei Wochen mit >3-Tage-Lücke → 2 Datenpunkte."""
+        # Woche 1: Tage 20-26 zurück
+        for i in range(7):
+            dt = datetime.now(timezone.utc) - timedelta(days=26 - i)
+            repo.save_price_history_entry(_offer(1.99, dt, slug_suffix=f"w1-{i}"))
+        # Woche 2: Tage 6-12 zurück (Lücke ≥ 8 Tage zur letzten Woche-1-Erfassung)
+        for i in range(7):
+            dt = datetime.now(timezone.utc) - timedelta(days=12 - i)
+            repo.save_price_history_entry(_offer(1.99, dt, slug_suffix=f"w2-{i}"))
+        results = repo.get_price_history_for_product(
+            source="aldi_nord", brand_lower="arla",
+            name_lower="frische milch", sales_unit_raw="1-L-Packung",
+        )
+        assert len(results) == 2
+
+    def test_one_offer_seven_daily_scrapes_gives_no_data(self, repo):
+        """1 laufendes Angebot (7 Tagespunkte) → no_data, nicht fälschlich Tendenz."""
+        for i in range(7):
+            dt = datetime.now(timezone.utc) - timedelta(days=6 - i)
+            repo.save_price_history_entry(_offer(1.99, dt, slug_suffix=str(i)))
+        r = rate_offer(
+            "aldi_nord", "arla", "frische milch", "1-L-Packung", 1.99, None, repo
+        )
+        assert r.level == "no_data"
+        assert r.historic_count == 1
+
+    def test_valid_from_deduplicates_daily_scrapes(self, repo):
+        """Gleiche (sale_price, valid_from) über 7 Tage → 1 Datenpunkt."""
+        vf = datetime.now(timezone.utc) - timedelta(days=10)
+        for i in range(7):
+            dt = vf + timedelta(days=i)
+            repo.save_price_history_entry(_offer(2.49, dt, slug_suffix=str(i), valid_from=vf))
+        results = repo.get_price_history_for_product(
+            source="aldi_nord", brand_lower="arla",
+            name_lower="frische milch", sales_unit_raw="1-L-Packung",
+        )
+        assert len(results) == 1
+
+    def test_thresholds_apply_to_offer_count(self, repo):
+        """Schwellen (_NO_DATA_THRESHOLD=3, _FULL_RATING_THRESHOLD=10) gelten
+        für Angebots-Datenpunkte, nicht für Tages-Einträge."""
+        # 2 Angebote (je 7 Tagespunkte): n=2 → no_data
+        for offer_week in [20, 6]:
+            for day in range(7):
+                dt = datetime.now(timezone.utc) - timedelta(days=offer_week - day)
+                repo.save_price_history_entry(
+                    _offer(1.99, dt, slug_suffix=f"w{offer_week}-{day}")
+                )
+        r = rate_offer(
+            "aldi_nord", "arla", "frische milch", "1-L-Packung", 1.99, None, repo
+        )
+        assert r.historic_count == 2
+        assert r.level == "no_data"

@@ -653,7 +653,9 @@ class OfferRepository:
         days: int = 90,
     ) -> list[dict]:
         """
-        Historische Preise der letzten N Tage für ein Produkt.
+        Historische Preise der letzten N Tage für ein Produkt, auf Angebots-Ebene
+        dedupliziert. Tägliche Scrapes desselben laufenden Angebots werden zu einem
+        Datenpunkt zusammengefasst (via _dedup_price_history).
         Matching case-insensitiv auf brand, name, sales_unit_raw.
         """
         from datetime import timedelta
@@ -661,7 +663,7 @@ class OfferRepository:
         with self._connection() as conn:
             rows = conn.execute(
                 """
-                SELECT sale_price, base_price_value, scraped_at
+                SELECT sale_price, base_price_value, scraped_at, valid_from
                 FROM price_history
                 WHERE source = ?
                   AND LOWER(COALESCE(brand, ''))          = ?
@@ -672,7 +674,7 @@ class OfferRepository:
                 """,
                 (source, brand_lower, name_lower, sales_unit_raw, cutoff),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return _dedup_price_history([dict(row) for row in rows])
 
     def get_price_history_for_chart(
         self,
@@ -877,6 +879,58 @@ class OfferRepository:
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
+
+def _dedup_price_history(rows: list[dict]) -> list[dict]:
+    """
+    Fasst tägliche Preiseinträge auf Angebots-Ebene zusammen.
+
+    Eingabe: Rohdaten aus price_history, aufsteigend nach scraped_at sortiert.
+
+    Regeln:
+    - valid_from gesetzt: GROUP BY (sale_price, base_price_value, valid_from) —
+      alle Tageseinträge desselben Angebots (gleiche Angebotsperiode) ergeben
+      einen Datenpunkt.
+    - valid_from NULL: Einträge mit gleichem Preis und scraped_at-Abstand ≤ 3 Tage
+      gelten als ein Angebot. Ein Abstand > 3 Tage signalisiert eine neue
+      Angebotsperiode (gleicher Preis, andere Woche).
+    """
+    if not rows:
+        return []
+
+    result: list[dict] = []
+    seen_with_vf: set[tuple] = set()
+    # (sale_price, base_price_value) → last scraped_at ISO-string des laufenden Runs
+    null_vf_last: dict[tuple, str] = {}
+
+    for row in rows:
+        sp  = row.get("sale_price")
+        bpv = row.get("base_price_value")
+        vf  = row.get("valid_from")
+        sa  = row.get("scraped_at") or ""
+
+        if vf:
+            key = (sp, bpv, vf)
+            if key not in seen_with_vf:
+                seen_with_vf.add(key)
+                result.append(row)
+        else:
+            key = (sp, bpv)
+            last_sa = null_vf_last.get(key)
+            if last_sa is None:
+                result.append(row)
+            else:
+                try:
+                    last_dt = datetime.fromisoformat(last_sa.replace("Z", "+00:00"))
+                    cur_dt  = datetime.fromisoformat(sa.replace("Z", "+00:00"))
+                    gap_days = (cur_dt - last_dt).days
+                except (ValueError, TypeError):
+                    gap_days = 0
+                if gap_days > 3:
+                    result.append(row)
+            null_vf_last[key] = sa
+
+    return result
+
 
 _SEARCH_FIELDS = ("name", "brand", "short_description", "long_description")
 
