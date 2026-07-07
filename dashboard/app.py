@@ -42,6 +42,17 @@ st.set_page_config(page_title="Prospekt-Agent", layout="wide")
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
+/* ── Design Tokens ─────────────────────────────────────────── */
+:root {
+    --card:       #171c26;
+    --card-border:#262d3b;
+    --text-dim:   #8b93a3;
+    --green:      #34d399;
+    --green-dim:  rgba(52,211,153,0.12);
+    --amber:      #fbbf24;
+    --amber-dim:  rgba(251,191,36,0.12);
+}
+
 /* Tabs: kein Emoji-Padding, dezente Schrift */
 .stTabs [data-baseweb="tab-list"] { gap: 4px; }
 .stTabs [data-baseweb="tab"] {
@@ -72,6 +83,20 @@ hr { border-top: 1px solid #f3f4f6 !important; margin: 12px 0 !important; }
 
 /* Block-Container mehr Luft */
 .block-container { padding-top: 1.5rem !important; }
+
+/* ── Markt-Filter-Pills: grüne Selektion + Farbpunkte ─────────── */
+[data-testid="stPills"] button[aria-pressed="true"],
+[data-testid="stPills"] button[aria-selected="true"] {
+    background-color: var(--green-dim) !important;
+    color: var(--green) !important;
+    border-color: rgba(52,211,153,0.4) !important;
+}
+/* Farbpunkte je Markt (alphabetisch: aldi_nord, combi, edeka, kaufland, trinkgut) */
+[data-testid="stPills"] button:nth-of-type(1)::before { content: "● "; color: #00b2e3; }
+[data-testid="stPills"] button:nth-of-type(2)::before { content: "● "; color: #005ca9; }
+[data-testid="stPills"] button:nth-of-type(3)::before { content: "● "; color: #ffd500; }
+[data-testid="stPills"] button:nth-of-type(4)::before { content: "● "; color: #e10915; }
+[data-testid="stPills"] button:nth-of-type(5)::before { content: "● "; color: #f39200; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -391,6 +416,33 @@ _RATING_COLORS = {
     "no_data": "#9ca3af",
 }
 
+_MARKET_COLORS = {
+    "aldi_nord": "#00b2e3",
+    "kaufland":  "#e10915",
+    "edeka":     "#ffd500",
+    "combi":     "#005ca9",
+    "trinkgut":  "#f39200",
+}
+
+
+def _market_color(src: str) -> str:
+    return _MARKET_COLORS.get(src, "#262d3b")
+
+
+def _rating_dot_html(rating: dict | None) -> str:
+    if not rating:
+        return ""
+    lvl   = rating.get("level", "no_data")
+    label = _html.escape(rating.get("label", "–").replace("Tendenz: ", ""))
+    colors = {"green": "#34d399", "yellow": "#fbbf24", "red": "#ef4444", "no_data": "#9ca3af"}
+    color  = colors.get(lvl, "#9ca3af")
+    return (
+        f'<span style="display:inline-flex;align-items:center;gap:4px">'
+        f'<span style="width:7px;height:7px;border-radius:50%;background:{color};'
+        f'display:inline-block;flex-shrink:0"></span>'
+        f'<span>{label}</span></span>'
+    )
+
 
 def _savings_summary(matched: dict[str, list[dict]]) -> tuple[float, int, int, str]:
     """Berechnet Gesamt-Ersparnisse aus allen aktuellen Matches."""
@@ -565,13 +617,13 @@ def _render_offer_group(
     upcoming: bool = False,
     sl_keys_snapshot: set[tuple[str, str]] | None = None,
 ) -> None:
-    """Rendert eine Wishlist-Gruppe — native Streamlit, kein unsafe HTML in Cards."""
+    """Rendert eine Wishlist-Gruppe — HTML-Cards mit Streamlit-Buttons."""
     n = len(products)
     st.markdown(
-        f'<div style="font-size:14px;font-weight:600;color:#374151;'
-        f'margin:18px 0 6px 0;border-bottom:1px solid #f3f4f6;padding-bottom:6px">'
+        f'<div style="font-size:14px;font-weight:600;color:#c5cdd9;'
+        f'margin:18px 0 4px 0;border-bottom:1px solid var(--card-border);padding-bottom:6px">'
         f'{_html.escape(item_name)}'
-        f'<span style="font-size:12px;font-weight:400;color:#9ca3af;margin-left:8px">'
+        f'<span style="font-size:12px;font-weight:400;color:var(--text-dim);margin-left:8px">'
         f'{n} Treffer</span></div>',
         unsafe_allow_html=True,
     )
@@ -584,134 +636,167 @@ def _render_offer_group(
         variant_names = prod.get("variant_names") or []
         n_var         = len(variant_names)
 
+        src    = o.get("source") or ""
+        slug   = o.get("product_slug") or ""
         price  = o.get("sale_price") or 0.0
         orig   = o.get("original_price")
         disc   = o.get("discount_percent")
         card_p = o.get("card_price")
         unit_raw = o.get("sales_unit_raw") or ""
         bp_str   = _fmt_base_price(o)
-        content  = unit_raw + (f" · {bp_str}" if bp_str else "")
 
-        with st.container(border=True):
-            c_img, c_main, c_right = st.columns([1, 3.5, 1.8])
+        # ── Bild ─────────────────────────────────────────────────
+        img_url = o.get("image_url") or ""
+        img_el = (
+            f'<img src="{_html.escape(img_url)}" '
+            f'style="width:56px;height:56px;object-fit:contain;border-radius:8px;'
+            f'background:#1e2533;flex-shrink:0">'
+            if img_url else
+            '<div style="width:56px;height:56px;border-radius:8px;background:#1e2533;flex-shrink:0"></div>'
+        )
 
-            # ── Bild ─────────────────────────────────────────────────
-            with c_img:
-                img_url = o.get("image_url")
-                if img_url:
-                    st.image(img_url, width=60)
+        # ── Name-Zeile ───────────────────────────────────────────
+        if n_var > 1:
+            preview = " · ".join(_html.escape(v) for v in variant_names[:3])
+            if n_var > 3:
+                preview += f" (+{n_var-3})"
+            name_line = (
+                f'<span style="color:#c5cdd9">{n_var} Sorten</span>'
+                f'<span style="font-size:11px;color:var(--text-dim);margin-left:6px">{preview}</span>'
+            )
+        else:
+            name_h  = _html.escape(o.get("name") or "")
+            brand_h = _html.escape(o.get("brand") or "")
+            brand_part = (
+                f' · <span style="color:var(--text-dim)">{brand_h}</span>' if brand_h else ""
+            )
+            name_line = f'<span style="color:#c5cdd9">{name_h}</span>{brand_part}'
 
-            # ── Produktinfo ──────────────────────────────────────────
-            with c_main:
-                if n_var > 1:
-                    st.markdown(f"**{n_var} Sorten verfügbar**")
-                    preview = " · ".join(variant_names[:3])
-                    if n_var > 3:
-                        preview += f" (+{n_var-3})"
-                    st.caption(preview)
-                else:
-                    st.markdown(f"**{o.get('name', '')}**")
-                brand = o.get("brand") or ""
-                if brand:
-                    st.caption(brand)
-                if content:
-                    st.caption(content)
+        # ── Meta-Zeile ───────────────────────────────────────────
+        meta_items = []
+        if unit_raw or bp_str:
+            meta_items.append(_html.escape(unit_raw + (f" · {bp_str}" if bp_str else "")))
+        if rating:
+            meta_items.append(_rating_dot_html(rating))
+        _ov_url     = get_overview_url(src)
+        market_name = _html.escape(get_display_name(src))
+        mkt_sfx     = ""
+        if alts:
+            mkt_sfx += f" +{len(alts)}"
+        if p_count > 1:
+            mkt_sfx += f" ×{p_count}"
+        if _ov_url:
+            meta_items.append(
+                f'<a href="{_html.escape(_ov_url)}" target="_blank" '
+                f'style="color:var(--text-dim);text-decoration:none">'
+                f'{market_name} ↗{_html.escape(mkt_sfx)}</a>'
+            )
+        else:
+            meta_items.append(f'{market_name}{_html.escape(mkt_sfx)}')
+        if upcoming:
+            starts_txt = _starts_in_text(o.get("valid_from"))
+            if starts_txt and starts_txt != "heute":
+                meta_items.append(
+                    f'<span style="background:var(--amber-dim);color:var(--amber);'
+                    f'font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;'
+                    f'white-space:nowrap">startet {_html.escape(starts_txt)}</span>'
+                )
+        else:
+            date_str = _html.escape(format_german_date(o.get("valid_until")))
+            if date_str:
+                meta_items.append(date_str)
 
-            # ── Preis + Meta ─────────────────────────────────────────
-            with c_right:
-                # Preis (durchgestrichener UVP via Streamlit-Markdown)
-                price_md = f"**{price:.2f} €**"
-                if orig:
-                    price_md += f"  ~~{orig:.2f} €~~"
-                st.markdown(price_md)
+        sep      = ' <span style="opacity:0.35">·</span> '
+        meta_row = sep.join(meta_items)
 
-                # Rabatt-Badge (kleines HTML-Span, sicher weil nur Zahlen)
-                if disc:
-                    st.markdown(
-                        f'<span style="background:#dcfce7;color:#16a34a;'
-                        f'font-size:11px;font-weight:600;padding:1px 6px;'
-                        f'border-radius:4px">−{disc:.0f}%</span>',
-                        unsafe_allow_html=True,
-                    )
+        # ── Preis-Block (flat string → keine Leerzeilen im f-string-Template) ──
+        orig_span = (
+            f'<span style="font-size:13px;color:var(--text-dim);'
+            f'text-decoration:line-through;margin-right:6px">{orig:.2f} €</span>'
+            if orig else ""
+        )
+        disc_el = (
+            f'<div style="background:var(--green-dim);color:var(--green);font-size:12px;'
+            f'font-weight:600;padding:2px 8px;border-radius:8px;display:inline-block;'
+            f'margin-top:2px">−{disc:.0f}%</div>'
+            if disc else ""
+        )
+        card_el = (
+            f'<div style="font-size:11.5px;color:var(--text-dim);margin-top:3px">'
+            f'💳 {card_p:.2f} € mit Karte</div>'
+            if card_p else ""
+        )
+        price_block = (
+            f'<div style="display:flex;align-items:baseline;justify-content:flex-end">'
+            f'{orig_span}'
+            f'<span style="font-size:20px;font-weight:700;color:#e8ecf2">{price:.2f} €</span>'
+            f'</div>'
+            + disc_el + card_el
+        )
 
-                if card_p:
-                    st.caption(f"🃏 {card_p:.2f} €*")
+        border_color = _market_color(src)
+        card_html = (
+            f'<div style="background:var(--card);border:1px solid var(--card-border);'
+            f'border-left:3px solid {border_color};border-radius:10px;padding:10px 14px;'
+            f'margin:4px 0;display:flex;gap:12px;align-items:center">'
+            f'{img_el}'
+            f'<div style="flex:1;min-width:0;overflow:hidden">'
+            f'<div style="font-size:15px;font-weight:600;line-height:1.3;'
+            f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{name_line}</div>'
+            f'<div style="font-size:12.5px;color:var(--text-dim);margin-top:4px;'
+            f'display:flex;gap:6px;flex-wrap:wrap;align-items:center">{meta_row}</div>'
+            f'</div>'
+            f'<div style="text-align:right;min-width:110px;flex-shrink:0">{price_block}</div>'
+            f'</div>'
+        )
 
-                # Ampel als farbiger Text
-                if rating:
-                    lvl   = rating.get("level", "no_data")
-                    label = rating.get("label", "–").replace("Tendenz: ", "")
-                    color = _RATING_COLORS.get(lvl, "#9ca3af")
-                    st.markdown(
-                        f'<span style="color:{color};font-size:12px;font-weight:500">'
-                        f'{_html.escape(label)}</span>',
-                        unsafe_allow_html=True,
-                    )
+        # ── Buttons ──────────────────────────────────────────────
+        on_sl = sl_keys_snapshot is not None and (src, slug) in sl_keys_snapshot
+        btn_key = _elem_key("sl", src, slug,
+                            name=o.get("name") or "",
+                            brand=o.get("brand") or "",
+                            item_scope=item_name)
+        excl_btn_key = _elem_key("excl", src, slug,
+                                  name=o.get("name") or "",
+                                  brand=o.get("brand") or "",
+                                  item_scope=item_name)
 
-                # Markt + Duplikat-Info + Übersichts-Link
-                _src_str    = o.get("source") or ""
-                market_txt  = get_display_name(_src_str)
-                market_sfx  = ""
-                if alts:
-                    market_sfx += f" +{len(alts)}"
-                if p_count > 1:
-                    market_sfx += f" ×{p_count}"
-                _ov_url = get_overview_url(_src_str)
-                if _ov_url:
-                    st.caption(f"[{market_txt} ↗]({_ov_url}){market_sfx}")
-                else:
-                    st.caption(f"{market_txt}{market_sfx}")
-
-                # Datum / "Startet in"
-                if upcoming:
-                    st.caption(f"Startet: {_starts_in_text(o.get('valid_from'))}")
-                else:
-                    st.caption(format_german_date(o.get("valid_until")))
-
-                # ── Shopping-List-Button ──────────────────────────────
-                src  = o.get("source") or ""
-                slug = o.get("product_slug") or ""
-                on_sl = sl_keys_snapshot is not None and (src, slug) in sl_keys_snapshot
-                btn_key = _elem_key("sl", src, slug,
-                                    name=o.get("name") or "",
-                                    brand=o.get("brand") or "",
-                                    item_scope=item_name)
-                if on_sl:
-                    if st.button("✓ Auf Liste", key=btn_key,
-                                 use_container_width=True,
-                                 help="Aus Einkaufsliste entfernen"):
-                        _sl_remove_by_keys(src, slug)
-                        st.rerun()
-                else:
-                    if st.button("+ Liste", key=btn_key,
-                                 use_container_width=True):
-                        _sl_add(o)
-                        st.rerun()
-
-                # ── Ausblenden-Button ─────────────────────────────────
-                excl_btn_key = _elem_key("excl", src, slug,
-                                         name=o.get("name") or "",
-                                         brand=o.get("brand") or "",
-                                         item_scope=item_name)
-                if st.button("Ausblenden", key=excl_btn_key,
+        c_card, c_add, c_excl = st.columns([10, 0.7, 0.7])
+        with c_card:
+            st.markdown(card_html, unsafe_allow_html=True)
+        with c_add:
+            if on_sl:
+                if st.button("✓", key=btn_key,
                              use_container_width=True,
-                             help="Dauerhaft aus diesen Treffern entfernen"):
-                    _repo_excl = OfferRepository(DB_PATH)
-                    _wl_id = next(
-                        (r["id"] for r in _repo_excl.get_wishlist_rows()
-                         if r["name"] == item_name),
-                        None,
-                    )
-                    if _wl_id is not None:
-                        _repo_excl.add_exclude(
-                            _wl_id,
-                            src,
-                            _nm(o.get("brand") or "")[:32],
-                            _nm(o.get("name")  or "")[:40],
-                        )
-                    st.toast("Ausgeblendet — erscheint nicht mehr als Treffer.")
-                    st.cache_data.clear()
+                             help="Aus Einkaufsliste entfernen"):
+                    _sl_remove_by_keys(src, slug)
                     st.rerun()
+            else:
+                if st.button("＋", key=btn_key,
+                             use_container_width=True,
+                             help="Zur Einkaufsliste hinzufügen"):
+                    _sl_add(o)
+                    st.rerun()
+        with c_excl:
+            if st.button("✕", key=excl_btn_key,
+                         use_container_width=True,
+                         help="Dauerhaft ausblenden"):
+                _repo_excl = OfferRepository(DB_PATH)
+                _wl_id = next(
+                    (r["id"] for r in _repo_excl.get_wishlist_rows()
+                     if r["name"] == item_name),
+                    None,
+                )
+                if _wl_id is not None:
+                    _repo_excl.add_exclude(
+                        _wl_id,
+                        src,
+                        _nm(o.get("brand") or "")[:32],
+                        _nm(o.get("name")  or "")[:40],
+                    )
+                st.toast("Ausgeblendet — erscheint nicht mehr als Treffer.")
+                st.cache_data.clear()
+                st.rerun()
 
         # Alternativen-Expander (außerhalb der Card)
         if alts:
@@ -733,76 +818,114 @@ def _render_offer_group(
 
 
 def _render_search_result_card(o: dict, sl_keys_snapshot: set[tuple[str, str]]) -> None:
-    """Ergebnis-Card der Volltextsuche — reduzierte Variante von _render_offer_group
-    (kein Wishlist-Kontext, daher keine Ampel/Ausblenden/Alternativen)."""
+    """Ergebnis-Card der Volltextsuche — gleiche Optik wie Wishlist-Treffer,
+    aber ohne Ampel/Ausblenden/Alternativen."""
+    src    = o.get("source") or ""
+    slug   = o.get("product_slug") or ""
     price  = o.get("sale_price") or 0.0
     orig   = o.get("original_price")
     disc   = o.get("discount_percent")
     card_p = o.get("card_price")
     unit_raw = o.get("sales_unit_raw") or ""
     bp_str   = _fmt_base_price(o)
-    content  = unit_raw + (f" · {bp_str}" if bp_str else "")
 
-    with st.container(border=True):
-        c_img, c_main, c_right = st.columns([1, 3.5, 1.8])
+    img_url = o.get("image_url") or ""
+    img_el = (
+        f'<img src="{_html.escape(img_url)}" '
+        f'style="width:56px;height:56px;object-fit:contain;border-radius:8px;'
+        f'background:#1e2533;flex-shrink:0">'
+        if img_url else
+        '<div style="width:56px;height:56px;border-radius:8px;background:#1e2533;flex-shrink:0"></div>'
+    )
 
-        with c_img:
-            img_url = o.get("image_url")
-            if img_url:
-                st.image(img_url, width=60)
+    name_h  = _html.escape(o.get("name") or "")
+    brand_h = _html.escape(o.get("brand") or "")
+    brand_part = (
+        f' · <span style="color:var(--text-dim)">{brand_h}</span>' if brand_h else ""
+    )
 
-        with c_main:
-            st.markdown(f"**{o.get('name', '')}**")
-            brand = o.get("brand") or ""
-            if brand:
-                st.caption(brand)
-            if content:
-                st.caption(content)
+    meta_items = []
+    if unit_raw or bp_str:
+        meta_items.append(_html.escape(unit_raw + (f" · {bp_str}" if bp_str else "")))
+    _ov_url     = get_overview_url(src)
+    market_name = _html.escape(get_display_name(src))
+    if _ov_url:
+        meta_items.append(
+            f'<a href="{_html.escape(_ov_url)}" target="_blank" '
+            f'style="color:var(--text-dim);text-decoration:none">{market_name} ↗</a>'
+        )
+    else:
+        meta_items.append(market_name)
+    date_str = _html.escape(format_german_date(o.get("valid_until")))
+    if date_str:
+        meta_items.append(date_str)
 
-        with c_right:
-            price_md = f"**{price:.2f} €**"
-            if orig:
-                price_md += f"  ~~{orig:.2f} €~~"
-            st.markdown(price_md)
+    sep      = ' <span style="opacity:0.35">·</span> '
+    meta_row = sep.join(meta_items)
 
-            if disc:
-                st.markdown(
-                    f'<span style="background:#dcfce7;color:#16a34a;'
-                    f'font-size:11px;font-weight:600;padding:1px 6px;'
-                    f'border-radius:4px">−{disc:.0f}%</span>',
-                    unsafe_allow_html=True,
-                )
+    orig_span = (
+        f'<span style="font-size:13px;color:var(--text-dim);'
+        f'text-decoration:line-through;margin-right:6px">{orig:.2f} €</span>'
+        if orig else ""
+    )
+    disc_el = (
+        f'<div style="background:var(--green-dim);color:var(--green);font-size:12px;'
+        f'font-weight:600;padding:2px 8px;border-radius:8px;display:inline-block;'
+        f'margin-top:2px">−{disc:.0f}%</div>'
+        if disc else ""
+    )
+    card_el = (
+        f'<div style="font-size:11.5px;color:var(--text-dim);margin-top:3px">'
+        f'💳 {card_p:.2f} € mit Karte</div>'
+        if card_p else ""
+    )
+    price_block = (
+        f'<div style="display:flex;align-items:baseline;justify-content:flex-end">'
+        f'{orig_span}'
+        f'<span style="font-size:20px;font-weight:700;color:#e8ecf2">{price:.2f} €</span>'
+        f'</div>'
+        + disc_el + card_el
+    )
 
-            if card_p:
-                st.caption(f"🃏 {card_p:.2f} €*")
+    border_color = _market_color(src)
+    card_html = (
+        f'<div style="background:var(--card);border:1px solid var(--card-border);'
+        f'border-left:3px solid {border_color};border-radius:10px;padding:10px 14px;'
+        f'margin:4px 0;display:flex;gap:12px;align-items:center">'
+        f'{img_el}'
+        f'<div style="flex:1;min-width:0;overflow:hidden">'
+        f'<div style="font-size:15px;font-weight:600;line-height:1.3;'
+        f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+        f'<span style="color:#c5cdd9">{name_h}</span>{brand_part}</div>'
+        f'<div style="font-size:12.5px;color:var(--text-dim);margin-top:4px;'
+        f'display:flex;gap:6px;flex-wrap:wrap;align-items:center">{meta_row}</div>'
+        f'</div>'
+        f'<div style="text-align:right;min-width:110px;flex-shrink:0">{price_block}</div>'
+        f'</div>'
+    )
 
-            src  = o.get("source") or ""
-            slug = o.get("product_slug") or ""
-            market_txt = get_display_name(src)
-            _ov_url = get_overview_url(src)
-            if _ov_url:
-                st.caption(f"[{market_txt} ↗]({_ov_url})")
-            else:
-                st.caption(market_txt)
+    on_sl   = (src, slug) in sl_keys_snapshot
+    btn_key = _elem_key("sl", src, slug,
+                        name=o.get("name") or "",
+                        brand=o.get("brand") or "",
+                        item_scope="suche")
 
-            st.caption(format_german_date(o.get("valid_until")))
-
-            on_sl = (src, slug) in sl_keys_snapshot
-            btn_key = _elem_key("sl", src, slug,
-                                name=o.get("name") or "",
-                                brand=o.get("brand") or "",
-                                item_scope="suche")
-            if on_sl:
-                if st.button("✓ Auf Liste", key=btn_key,
-                             use_container_width=True,
-                             help="Aus Einkaufsliste entfernen"):
-                    _sl_remove_by_keys(src, slug)
-                    st.rerun()
-            else:
-                if st.button("+ Liste", key=btn_key,
-                             use_container_width=True):
-                    _sl_add(o)
-                    st.rerun()
+    c_card, c_btn = st.columns([10, 0.7])
+    with c_card:
+        st.markdown(card_html, unsafe_allow_html=True)
+    with c_btn:
+        if on_sl:
+            if st.button("✓", key=btn_key,
+                         use_container_width=True,
+                         help="Aus Einkaufsliste entfernen"):
+                _sl_remove_by_keys(src, slug)
+                st.rerun()
+        else:
+            if st.button("＋", key=btn_key,
+                         use_container_width=True,
+                         help="Zur Einkaufsliste hinzufügen"):
+                _sl_add(o)
+                st.rerun()
 
 
 def _render_search_results(query: str) -> None:
@@ -1110,16 +1233,22 @@ tab_hits, tab_shop, tab_wish, tab_all, tab_hist, tab_status = st.tabs(
 
 # ── Tab 1: Treffer ──────────────────────────────────────────────────────────
 with tab_hits:
-    col_title, col_btn = st.columns([6, 1])
-    with col_title:
-        st.markdown(
-            '<div style="font-size:22px;font-weight:700;color:#111;margin-bottom:4px">'
-            'Deine Treffer</div>',
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        '<div style="font-size:22px;font-weight:700;color:#111;margin-bottom:8px">'
+        'Deine Treffer</div>',
+        unsafe_allow_html=True,
+    )
 
-    # ── Aktualisieren-Button (Ghost-Stil) ──
-    with col_btn:
+    # ── Toolbar: Suche + Aktualisieren in einer Zeile (Change 7) ────────────
+    col_search, col_refresh = st.columns([5, 1])
+    with col_search:
+        search_query = st.text_input(
+            "Suche",
+            key="treffer_search_query",
+            placeholder="🔍 Suche nach Produkt, Marke oder Beschreibung...",
+            label_visibility="collapsed",
+        )
+    with col_refresh:
         if st.button("↻ Aktualisieren", use_container_width=True):
             from src.adapters.aldi_nord import AldiNordAdapter
             from src.adapters.kaufland import KauflandAdapter
@@ -1127,7 +1256,6 @@ with tab_hits:
             adapters = [AldiNordAdapter(), KauflandAdapter(), TrinkgutAdapter()]
             repo_ref = OfferRepository(DB_PATH)
 
-            # Abgelaufene zuerst bereinigen
             cleaned = repo_ref.cleanup_expired_offers()
             if cleaned:
                 st.info(f"🧹 {cleaned} abgelaufene Angebote bereinigt.")
@@ -1150,7 +1278,6 @@ with tab_hits:
             if total:
                 st.success(f"✅ {total} Angebote aktualisiert.")
 
-            # ── Alert-Prüfung nach Aktualisierung ──
             if settings.email_configured:
                 with st.spinner("Prüfe Alarm-Schwellen…"):
                     from src.notifications.email_sender import EmailSender
@@ -1167,37 +1294,31 @@ with tab_hits:
                     if _sent:
                         st.info(f"🔔 {_sent} Alarm-E-Mail(s) versendet.")
 
-    # ── Suche (ersetzt bei Eingabe die komplette Treffer-Ansicht unten) ──────
-    search_query = st.text_input(
-        "Suche",
-        key="treffer_search_query",
-        placeholder="🔍 Suche nach Produkt, Marke oder Beschreibung...",
-        label_visibility="collapsed",
-    )
-
     if search_query.strip():
         _render_search_results(search_query.strip())
     else:
         matched = _load_matched_products()
 
-        # ── Supermarkt-Filter (Quelle: alle aktiven Angebote in der DB) ──────
+        # ── Markt-Filter als Pills (Change 5) ───────────────────────────────
+        # _all_offers() statt _active_offers() → zeigt auch Märkte ohne aktive Angebote
         _all_mkts = sorted({
             o.get("source") or ""
-            for o in _active_offers()
+            for o in _all_offers()
             if o.get("source")
         })
 
         if _all_mkts:
-            # Checkbox-Zeile: ein Checkbox pro Markt, horizontal
-            cb_cols = st.columns(len(_all_mkts))
-            for _i, _mkt in enumerate(_all_mkts):
-                _key = f"filter_cb_{_mkt}"
-                if _key not in st.session_state:
-                    st.session_state[_key] = True
-                with cb_cols[_i]:
-                    st.checkbox(get_display_name(_mkt), key=_key)
-
-            _mkt_set = {_mkt for _mkt in _all_mkts if st.session_state.get(f"filter_cb_{_mkt}", True)}
+            _disp_names  = [get_display_name(m) for m in _all_mkts]
+            _disp_to_src = {get_display_name(m): m for m in _all_mkts}
+            _selected = st.pills(
+                "Märkte",
+                options=_disp_names,
+                selection_mode="multi",
+                default=_disp_names,
+                label_visibility="collapsed",
+                key="market_pills",
+            )
+            _mkt_set = {_disp_to_src[d] for d in (_selected or [])} or set(_all_mkts)
             matched = {
                 k: [p for p in v if p["primary"].get("source") in _mkt_set]
                 for k, v in matched.items()
@@ -1213,7 +1334,6 @@ with tab_hits:
                 "keine aktiven Angebote, oder alle Filter zu streng."
             )
         else:
-            # ── Produkte in "aktuell" und "kommend" aufteilen ──
             now_dt = datetime.now(timezone.utc)
 
             current_by_item: dict[str, list[dict]] = {}
@@ -1227,7 +1347,6 @@ with tab_hits:
                     else:
                         current_by_item.setdefault(item_name, []).append(prod)
 
-            # Kommende: erst nach valid_from, dann nach Wishlist-Name
             upcoming_list.sort(key=lambda t: (t[0], t[1]))
             upcoming_by_item: dict[str, list[dict]] = {}
             for _, item_name, prod in upcoming_list:
@@ -1236,37 +1355,32 @@ with tab_hits:
             n_current  = sum(len(v) for v in current_by_item.values())
             n_upcoming = len(upcoming_list)
 
-            # ── Spar-Übersicht Card ────────────────────────────────────────
+            # ── Spar-Banner (Change 6) ───────────────────────────────────────
             total_s, n_prod, n_mkts, best_deal = _savings_summary(current_by_item)
             if total_s > 0:
-                best_html = (
-                    f'<div style="font-size:12px;color:#15803d;margin-top:12px;'
-                    f'padding-top:12px;border-top:1px solid #bbf7d0">'
-                    f'<span style="font-weight:600">Bester Deal: </span>'
-                    f'{_html.escape(best_deal)}</div>'
+                best_short = (best_deal[:75] + "…") if len(best_deal) > 75 else best_deal
+                best_part  = (
+                    f'<div style="font-size:13px;color:var(--text-dim);'
+                    f'flex-shrink:0;text-align:right;max-width:300px">'
+                    f'Bester Deal: {_html.escape(best_short)}</div>'
                 ) if best_deal else ""
                 st.markdown(f"""
-<div style="background:linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%);
-border:1px solid #bbf7d0;border-radius:14px;padding:22px 26px;margin-bottom:20px">
-  <div style="font-size:12px;color:#16a34a;font-weight:600;
-  text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">
-    Diese Woche sparst du bis zu
-  </div>
-  <div style="font-size:38px;font-weight:800;color:#111;line-height:1">
+<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;
+background:var(--green-dim);border:1px solid rgba(52,211,153,0.25);
+border-radius:12px;padding:14px 20px;margin-bottom:16px">
+  <div style="font-size:26px;font-weight:700;color:var(--green);flex-shrink:0">
     {total_s:.2f} €
   </div>
-  <div style="font-size:13px;color:#4b5563;margin-top:6px">
-    bei {n_prod} Angeboten über {n_mkts} Märkten
+  <div style="font-size:13px;color:var(--text-dim);flex:1">
+    mögliche Ersparnis · {n_prod} Angebote · {n_mkts} Märkte
   </div>
-  {best_html}
+  {best_part}
 </div>""", unsafe_allow_html=True)
 
             st.caption(f"{n_current} aktuelle · {n_upcoming} kommende Treffer")
 
-            # SL-Keys einmalig laden, damit alle Cards konsistenten Zustand zeigen
             _current_sl_keys = _sl_keys()
 
-            # ── Abschnitt 1: Aktuelle Angebote ──
             st.markdown(
                 '<div style="font-size:16px;font-weight:700;color:#111;margin:20px 0 4px 0">'
                 'Aktuelle Angebote</div>',
@@ -1279,7 +1393,6 @@ border:1px solid #bbf7d0;border-radius:14px;padding:22px 26px;margin-bottom:20px
             else:
                 st.info("Keine aktuellen Treffer — schau auch in kommende Angebote unten.")
 
-            # ── Abschnitt 2: Kommende Angebote ──
             if upcoming_by_item:
                 st.markdown(
                     '<div style="font-size:16px;font-weight:700;color:#111;margin:28px 0 6px 0">'

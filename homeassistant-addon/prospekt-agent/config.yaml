@@ -1,6 +1,6 @@
 name: "Prospekt-Agent"
 description: "Supermarkt-Angebote Scanner mit täglichem Scraper und Streamlit-Dashboard"
-version: "1.2.2"
+version: "1.3.0"
 slug: "prospekt_agent"
 url: "https://github.com/linusblo/prospekt-agent"
 arch:
